@@ -1,0 +1,21 @@
+{
+  "execution": {
+    "id": "42",
+    "url": "https://n8n.example.test/workflow/claimA1/executions/42",
+    "mode": "trigger",
+    "retryOf": null,
+    "lastNodeExecuted": "Launch instance",
+    "error": {
+      "name": "NodeOperationError",
+      "message": "Request failed with status code 500",
+      "node": {
+        "name": "Launch instance",
+        "type": "n8n-nodes-base.httpRequest"
+      }
+    }
+  },
+  "workflow": {
+    "id": "claimA1",
+    "name": "Claim A1 VM"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "request_url": "https://discord.test/webhook",
+  "statusCode": 429,
+  "headers": {
+    "retry-after": "1.5",
+    "content-type": "application/json"
+  },
+  "body": {
+    "global": false,
+    "message": "You are being rate limited.",
+    "retry_after": 1.5
+  }
+}
