@@ -18,7 +18,8 @@ Rule ids (stable; tests and the verifier refer to them):
   env-example-missing          the .env.example file cannot be read
   undeclared-env               $env.NAME used but NAME is not listed in .env.example
   oracle-launch-without-cost-guard
-                               an Oracle instance launch is not reached from the cost-guard node
+                               an Oracle instance launch can be reached from an entry node without
+                               passing the cost-guard node
 """
 import argparse
 import json
@@ -174,20 +175,25 @@ def check_document(name, doc, env_names):
                             edges.setdefault(source, set()).add(target_name)
 
     launches = [node["name"] for node in nodes if is_oracle_launch(node) and isinstance(node.get("name"), str)]
-    guards = [node_name for node_name in names if COST_GUARD_NAME.search(node_name)]
-    reached = set(guards)
-    stack = list(guards)
+    guards = {node_name for node_name in names if COST_GUARD_NAME.search(node_name)}
+    # Every launch path must pass the guard: walk from each entry node (no incoming connection) and do not
+    # expand through a guard node. A launch that is still reached can run without the guard.
+    incoming = {target for targets in edges.values() for target in targets}
+    entries = [name for name in names if name not in incoming and name not in guards]
+    unguarded = set()
+    stack = list(entries)
     while stack:
-        for nxt in edges.get(stack.pop(), ()):
-            if nxt not in reached:
-                reached.add(nxt)
-                stack.append(nxt)
+        current = stack.pop()
+        if current in unguarded:
+            continue
+        unguarded.add(current)
+        stack.extend(nxt for nxt in edges.get(current, ()) if nxt not in guards)
     for launch in launches:
         if not guards:
             err("oracle-launch-without-cost-guard", f"Oracle launch '{launch}' and no cost-guard node exists")
-        elif launch not in reached:
+        elif launch in unguarded:
             err("oracle-launch-without-cost-guard",
-                f"Oracle launch '{launch}' is not reached from the cost-guard node")
+                f"Oracle launch '{launch}' can run without passing the cost-guard node")
 
     for location, text in walk_strings(doc):
         for kind in secret_kinds(text):
