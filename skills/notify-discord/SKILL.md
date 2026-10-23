@@ -7,7 +7,21 @@ description: Send VM Hunter messages to Discord through a webhook, and report an
 
 ## Sending
 
-- `POST` to `$env.HUNTER_DISCORD_WEBHOOK_URL` with JSON. A success is HTTP `204 No Content`.
+- The webhook belongs to a Discord **forum** channel. Discord rejects a forum message that names no
+  thread, so every message is posted into a thread (a forum post, the owner's "room"):
+  `POST {$env.HUNTER_DISCORD_WEBHOOK_URL}?thread_id=<thread id>`.
+- The thread for a message: the per-kind setting if it is set, otherwise `HUNTER_DISCORD_THREAD_ID`.
+
+  | kind | setting (optional; falls back to `HUNTER_DISCORD_THREAD_ID`) |
+  |---|---|
+  | `offer` | `HUNTER_DISCORD_THREAD_OFFERS` |
+  | `claim` | `HUNTER_DISCORD_THREAD_CLAIMS` |
+  | `failure` | `HUNTER_DISCORD_THREAD_FAILURES` |
+  | `summary`, `alert` | `HUNTER_DISCORD_THREAD_SUMMARY` |
+
+  An empty setting counts as unset. If no thread id resolves at all, fail with a clear error rather
+  than posting without one.
+- A success is HTTP `204 No Content`.
 - Body: `{ "username": "VM Hunter", "content": "...", "embeds": [ ... ] }`.
 - `content` is at most 2000 characters; an embed `description` at most 4096; at most 10 embeds per message.
   Truncate with "…" rather than failing.
@@ -20,10 +34,11 @@ All other workflows call `notify-discord.json` with an Execute Workflow node ins
 themselves. Its input item:
 
 ```json
-{ "kind": "offer | claim | failure", "title": "short line", "body": "details", "url": "optional link" }
+{ "kind": "offer | claim | failure | summary | alert", "title": "short line", "body": "details", "url": "optional link" }
 ```
 
-It formats by `kind`: a new offer, a claim result (attempt count, region, shape), or a failure.
+It formats by `kind`: a new offer, a claim result (attempt count, region, shape), a failure, a daily
+summary line, or an alert (see the `monitoring` skill).
 
 ## Error workflow
 

@@ -62,3 +62,4 @@ Load the skill that matches your task:
 | `notify-discord` | Sending messages and reporting failures |
 | `offer-sources` | Reading free-for-dev and LowEndBox, and deciding what is new |
 | `provider-oracle` | Oracle Cloud: signing requests, the A1 free limits, the cost guard |
+| `monitoring` | Counters every workflow keeps, the daily summary line, and alerts |
