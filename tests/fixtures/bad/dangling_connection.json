@@ -1,0 +1,18 @@
+{
+  "id": "badDanglingConnection",
+  "name": "Bad fixture: connection to a missing node",
+  "active": false,
+  "nodes": [
+    {
+      "id": "22222222-3333-4444-8555-666666666661",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Every 6 hours": { "main": [[{ "node": "Missing node", "type": "main", "index": 0 }]] }
+  }
+}

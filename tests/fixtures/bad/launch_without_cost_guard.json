@@ -1,0 +1,29 @@
+{
+  "id": "badLaunchNoGuard",
+  "name": "Bad fixture: Oracle launch with no cost guard",
+  "active": false,
+  "nodes": [
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee2",
+      "name": "Launch instance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HUNTER_OCI_API_BASE }}/20160918/instances"
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": { "main": [[{ "node": "Launch instance", "type": "main", "index": 0 }]] }
+  }
+}

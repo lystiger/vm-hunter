@@ -1,0 +1,7 @@
+{
+  "id": "badActiveTrue",
+  "name": "Bad fixture: active is true",
+  "active": true,
+  "nodes": [],
+  "connections": {}
+}

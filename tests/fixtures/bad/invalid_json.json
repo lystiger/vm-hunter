@@ -1,0 +1,5 @@
+{
+  "id": "badFixture01",
+  "name": "Bad fixture: invalid JSON",
+  "active": false,
+  "nodes": [
