@@ -71,7 +71,7 @@
       "position": [880, -120],
       "parameters": {
         "resume": "timeInterval",
-        "amount": "={{ Number($json.body?.retry_after) || 1 }}",
+        "amount": "={{ Number($json.body?.retry_after ?? $json.headers?.['retry-after']) || 1 }}",
         "unit": "seconds"
       }
     },
@@ -93,6 +93,17 @@
           }
         }
       }
+    },
+    {
+      "id": "8d2a9c4e-3f61-4b0d-9e7a-5c1f8b2d6e93",
+      "name": "Check delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Check delivery: pass the response on when Discord answered 2xx (204 is success); otherwise fail the run so the error workflow reports it.\nconst response = $input.first().json;\nif (response.statusCode < 200 || response.statusCode > 299) {\n  throw new Error(`notify-discord: Discord returned HTTP ${response.statusCode}`);\n}\n\nreturn [{ json: response }];"
+      }
     }
   ],
   "connections": {
@@ -106,10 +117,13 @@
       "main": [[{ "node": "Rate limited?", "type": "main", "index": 0 }]]
     },
     "Rate limited?": {
-      "main": [[{ "node": "Wait for retry_after", "type": "main", "index": 0 }], []]
+      "main": [[{ "node": "Wait for retry_after", "type": "main", "index": 0 }], [{ "node": "Check delivery", "type": "main", "index": 0 }]]
     },
     "Wait for retry_after": {
       "main": [[{ "node": "Retry once", "type": "main", "index": 0 }]]
+    },
+    "Retry once": {
+      "main": [[{ "node": "Check delivery", "type": "main", "index": 0 }]]
     }
   },
   "settings": { "executionOrder": "v1", "errorWorkflow": "errorReport01" },
