@@ -18,7 +18,7 @@
       "position": [220, 0],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Count failure: count one failed run of a workflow in the error report's static data, per workflow name.\n// Runs before Build failure message, so every failure is counted even if the notice fails (see the monitoring skill).\n// The name defaults to 'unknown workflow', as in Build failure message. Other metrics are kept as they are.\nfunction countFailure(metrics, workflowName) {\n  const counters = { ...(metrics?.counters ?? {}) };\n  const failures = { ...(counters.failures ?? {}) };\n  failures[workflowName] = (failures[workflowName] ?? 0) + 1;\n  counters.failures = failures;\n  return { ...(metrics ?? {}), counters };\n}\n\nconst data = $getWorkflowStaticData('global');\nconst payload = $input.first().json;\ndata.metrics = countFailure(data.metrics, payload.workflow?.name || 'unknown workflow');\nreturn [{ json: payload }];"
+        "jsCode": "// Count failure: count one failed run of a workflow in the error report's static data, per workflow name.\n// The counters belong to one local day (GENERIC_TIMEZONE, UTC when unset): the first failure on a new day resets them.\n// Runs before Build failure message. n8n saves static data only from a run that succeeds, so this count is kept only when\n// this run's failure notice is delivered; if the notice fails, the run fails and the count is lost too (see the monitoring skill).\n// The name defaults to 'unknown workflow', as in Build failure message. Other metrics are kept as they are.\nfunction localDay(now, timeZone) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);\n}\n\nfunction countFailure(metrics, day, workflowName) {\n  // A new day starts with empty counters and no alerts sent yet.\n  const current = metrics?.day === day ? metrics : { ...(metrics ?? {}), day, counters: {}, alerted: {} };\n  const counters = { ...(current.counters ?? {}) };\n  const failures = { ...(counters.failures ?? {}) };\n  failures[workflowName] = (failures[workflowName] ?? 0) + 1;\n  counters.failures = failures;\n  return { ...current, counters };\n}\n\nconst data = $getWorkflowStaticData('global');\nconst payload = $input.first().json;\nconst day = localDay(new Date(), $env.GENERIC_TIMEZONE || 'UTC');\ndata.metrics = countFailure(data.metrics, day, payload.workflow?.name || 'unknown workflow');\nreturn [{ json: payload }];"
       }
     },
     {
@@ -59,6 +59,45 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "c5d2e8f1-4a7b-4e6c-9d3f-1b8a6e0c2f47",
+      "name": "Build alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build alert: once a workflow has failed more than ALERT_AFTER times today, build one alert for it (kind alert).\n// Sent once per workflow per day: the key is kept in static data, which is saved only when this run succeeds.\n// Returns no item for every other failure, so Notify alert does not run.\nconst ALERT_AFTER = 3;\n\nconst data = $getWorkflowStaticData('global');\nconst name = $('Error input').first().json.workflow?.name || 'unknown workflow';\nconst count = data.metrics?.counters?.failures?.[name] ?? 0;\nconst key = `failures:${name}`;\nif (count <= ALERT_AFTER || data.metrics.alerted?.[key]) return [];\ndata.metrics.alerted = { ...(data.metrics.alerted ?? {}), [key]: true };\n\nconst title = `Repeated failures: ${name}`;\nconst body = `${count} failures today (alert above ${ALERT_AFTER}). The n8n executions list shows each one.`;\nreturn [{ json: { kind: 'alert', title, body, url: '' } }];"
+      }
+    },
+    {
+      "id": "e1f7a3b9-2d6c-4a85-8b0e-7c4d9f2a5e61",
+      "name": "Notify alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1100, 0],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
     }
   ],
   "connections": {
@@ -70,6 +109,12 @@
     },
     "Build failure message": {
       "main": [[{ "node": "Notify Discord", "type": "main", "index": 0 }]]
+    },
+    "Notify Discord": {
+      "main": [[{ "node": "Build alert", "type": "main", "index": 0 }]]
+    },
+    "Build alert": {
+      "main": [[{ "node": "Notify alert", "type": "main", "index": 0 }]]
     }
   },
   "settings": { "executionOrder": "v1" },

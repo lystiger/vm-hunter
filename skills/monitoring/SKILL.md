@@ -64,9 +64,10 @@ failure to keep the counters: a run that "succeeds" after a failed send hides th
 
 ### Error workflow
 
-Counters: `failures` per workflow name (this is where failed sends of Notify Discord are counted).
-Alert when one workflow fails more than 3 times in a day. The error workflow's own runs succeed, so
-its static data is saved.
+Counters: `failures` per workflow name, reset when the local day changes (this is where failed sends of
+Notify Discord are counted). Alert when one workflow fails more than 3 times in a day. The error workflow's
+run saves its static data only when its own failure notice is delivered. If that notice fails, the run
+fails, and that one failure is not counted; it still shows in the n8n executions list.
 
 ## Rule for every workflow
 

@@ -51,6 +51,22 @@ new Function('$input', '$', '$getWorkflowStaticData', code)({ first: () => ({ js
 process.stdout.write(JSON.stringify(ctx.staticData));
 """
 
+# Runs an error report Code node body with $getWorkflowStaticData, $env and $('Name') bound as in n8n, and with the clock
+# fixed at ctx.now, so the day logic gets "now" from the test. Prints the items the node returned and the static data.
+CLOCK_RUNNER = """
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const FixedDate = class extends Date {
+  constructor(...args) { super(...(args.length ? args : [ctx.now])); }
+};
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const out = new Function('$input', '$env', '$', '$getWorkflowStaticData', 'Date', code)(
+  { first: () => ({ json: ctx.input }) }, ctx.env ?? {}, $, () => staticData, FixedDate);
+process.stdout.write(JSON.stringify({ items: out.map((item) => item.json), staticData }));
+"""
+
 # Chains the Check delivery body and then the Count delivery body, the way n8n runs them: a throw in Check delivery stops
 # the run before Count delivery. Prints the static data as it stands and whether the run succeeded, so a test can see
 # that a failed run left the counters alone.
@@ -554,36 +570,129 @@ def test_count_delivery_sits_after_the_delivery_check():
 
 
 # Failure counts: the error report's Count failure node counts each failed run per workflow name, in its static data.
-def count_failure(tmp_path, payload, static_data):
-    """Run Count failure on one Error Trigger payload with the given static data. Returns the static data it wrote."""
-    code = node_named("Count failure", ERROR_WORKFLOW)["parameters"]["jsCode"]
-    context = {"input": payload, "nodes": {}, "staticData": static_data}
-    result = run_js(tmp_path, COUNT_RUNNER, code, context)
+NOW = "2026-10-23T12:00:00Z"  # noon UTC: the same local day in every zone checked here
+TOMORROW = "2026-10-24T12:00:00Z"
+
+
+def run_error_node(tmp_path, name, item, static_data, now=NOW, env=None, nodes=None):
+    """Run one error report Code node with the clock at now. Returns (items the node returned, static data it left)."""
+    code = node_named(name, ERROR_WORKFLOW)["parameters"]["jsCode"]
+    context = {"input": item, "env": env or {}, "nodes": nodes or {}, "staticData": static_data, "now": now}
+    result = run_js(tmp_path, CLOCK_RUNNER, code, context)
     assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+    out = json.loads(result.stdout)
+    return out["items"], out["staticData"]
+
+
+def count_failure(tmp_path, payload, static_data, now=NOW, env=None):
+    """Run Count failure on one Error Trigger payload with the given static data. Returns the static data it wrote."""
+    _, after = run_error_node(tmp_path, "Count failure", payload, static_data, now, env)
+    return after
+
+
+def failure_run(tmp_path, payload, static_data, now=NOW):
+    """One error report run that reaches the alert check: Count failure, then Build alert. Returns (alert items, static data)."""
+    _, counted = run_error_node(tmp_path, "Count failure", payload, static_data, now)
+    return run_error_node(tmp_path, "Build alert", payload, counted, now, nodes={"Error input": payload})
 
 
 @needs_node
 def test_first_failure_of_a_workflow_counts_one_under_its_name(tmp_path):
     payload = json.loads((FIXTURES / "error-trigger.input.json").read_text(encoding="utf-8"))
     after = count_failure(tmp_path, payload, {})["metrics"]
-    assert after == {"counters": {"failures": {"Claim A1 VM": 1}}}
+    assert after == {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
 
 
 @needs_node
 def test_failures_add_up_per_name_and_keep_the_rest_of_the_metrics(tmp_path):
-    metrics = {"day": "2026-10-23", "counters": {"failures": {"Claim A1 VM": 2, "Watch offers": 1}, "other": 7},
-               "alerted": {"failures-claim": True}}
+    metrics = {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 2, "Watch offers": 1}, "other": 7},
+               "alerted": {"failures:Watch offers": True}, "lastSuccessAt": {"offers": "2026-10-23T09:00:00Z"}}
     payload = {"workflow": {"name": "Claim A1 VM"}, "execution": {}}
     after = count_failure(tmp_path, payload, {"metrics": metrics})["metrics"]
-    assert after == {"day": "2026-10-23", "counters": {"failures": {"Claim A1 VM": 3, "Watch offers": 1}, "other": 7},
-                     "alerted": {"failures-claim": True}}
+    assert after == dict(metrics, counters={"failures": {"Claim A1 VM": 3, "Watch offers": 1}, "other": 7})
 
 
 @needs_node
 def test_missing_workflow_name_counts_under_unknown_workflow(tmp_path):
     after = count_failure(tmp_path, {"execution": {}}, {})["metrics"]
-    assert after == {"counters": {"failures": {"unknown workflow": 1}}}
+    assert after == {"day": METRICS_DAY, "counters": {"failures": {"unknown workflow": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_a_new_day_resets_the_counters_and_the_alerts(tmp_path):
+    metrics = {"day": "2026-10-22", "counters": {"failures": {"Claim A1 VM": 9}}, "alerted": {"failures:Claim A1 VM": True}}
+    after = count_failure(tmp_path, fixture("error-trigger"), {"metrics": metrics}, now=TOMORROW)["metrics"]
+    assert after == {"day": "2026-10-24", "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_the_day_is_local_to_generic_timezone(tmp_path):
+    # 23:30 UTC on 22 October is already 23 October in Berlin (UTC+2 in October), so only the Berlin count starts over.
+    metrics = {"day": "2026-10-22", "counters": {"failures": {"Claim A1 VM": 2}}, "alerted": {}}
+    late = "2026-10-22T23:30:00Z"
+    payload = fixture("error-trigger")
+    utc = count_failure(tmp_path, payload, {"metrics": metrics}, now=late)["metrics"]
+    berlin = count_failure(tmp_path, payload, {"metrics": metrics}, now=late,
+                           env={"GENERIC_TIMEZONE": "Europe/Berlin"})["metrics"]
+    assert utc["counters"] == {"failures": {"Claim A1 VM": 3}}
+    assert berlin == {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_no_alert_up_to_three_failures_of_one_workflow(tmp_path):
+    payload = fixture("error-trigger")
+    static_data = {}
+    for _ in range(3):
+        items, static_data = failure_run(tmp_path, payload, static_data)
+        assert items == []
+    assert static_data["metrics"]["counters"]["failures"] == {"Claim A1 VM": 3}
+
+
+@needs_node
+def test_the_fourth_failure_of_a_workflow_in_a_day_sends_one_alert(tmp_path):
+    payload = fixture("error-trigger")
+    static_data = {}
+    alerts = []
+    for _ in range(5):
+        items, static_data = failure_run(tmp_path, payload, static_data)
+        alerts.append(items)
+    assert alerts == [[], [], [],
+                      [{"kind": "alert", "title": "Repeated failures: Claim A1 VM",
+                        "body": "4 failures today (alert above 3). The n8n executions list shows each one.", "url": ""}],
+                      []]
+    assert static_data["metrics"]["alerted"] == {"failures:Claim A1 VM": True}
+
+
+@needs_node
+def test_alerts_are_per_workflow_and_come_again_on_a_new_day(tmp_path):
+    claim = fixture("error-trigger")
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = {}
+    for _ in range(4):
+        _, static_data = failure_run(tmp_path, claim, static_data)
+    items, static_data = failure_run(tmp_path, watch, static_data)
+    assert items == []  # Watch offers has failed once today
+    for _ in range(3):
+        items, static_data = failure_run(tmp_path, claim, static_data, now=TOMORROW)
+        assert items == []
+    items, static_data = failure_run(tmp_path, claim, static_data, now=TOMORROW)
+    assert [item["title"] for item in items] == ["Repeated failures: Claim A1 VM"]
+
+
+def test_error_report_alerts_through_notify_after_the_failure_notice():
+    connections = load_workflow(ERROR_WORKFLOW)["connections"]
+    assert connections["Notify Discord"]["main"] == [[{"node": "Build alert", "type": "main", "index": 0}]]
+    assert connections["Build alert"]["main"] == [[{"node": "Notify alert", "type": "main", "index": 0}]]
+    alert = node_named("Notify alert", ERROR_WORKFLOW)
+    assert alert["type"] == "n8n-nodes-base.executeWorkflow"
+    assert alert["parameters"]["workflowId"]["value"] == "notifyDiscord01"
+    assert alert["parameters"]["workflowInputs"] == node_named("Notify Discord", ERROR_WORKFLOW)["parameters"]["workflowInputs"]
+
+
+def test_error_report_notices_are_not_caught():
+    # A failed notice must fail the run, so n8n keeps no static data for it and the failure stays visible in the executions list.
+    for name in ("Notify Discord", "Notify alert"):
+        assert "onError" not in node_named(name, ERROR_WORKFLOW)
 
 
 def test_count_failure_sits_before_the_message_and_passes_the_payload_on():
