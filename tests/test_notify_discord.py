@@ -208,10 +208,12 @@ def test_429_branch_waits_retry_after_then_retries_once_without_loop():
     connections = load_workflow()["connections"]
     assert connections["Post to Discord"]["main"] == [[{"node": "Rate limited?", "type": "main", "index": 0}]]
     rate_limited = connections["Rate limited?"]["main"]
-    assert rate_limited == [[{"node": "Wait for retry_after", "type": "main", "index": 0}], []]
+    assert rate_limited == [[{"node": "Wait for retry_after", "type": "main", "index": 0}],
+                            [{"node": "Check delivery", "type": "main", "index": 0}]]
     assert connections["Wait for retry_after"]["main"] == [[{"node": "Retry once", "type": "main", "index": 0}]]
-    # The retry has no outgoing connection, so it cannot loop back to the status check.
-    assert "Retry once" not in connections
+    # The retry goes only to the delivery check, which has no outgoing connection, so nothing loops back.
+    assert connections["Retry once"]["main"] == [[{"node": "Check delivery", "type": "main", "index": 0}]]
+    assert "Check delivery" not in connections
     condition = node_named("Rate limited?")["parameters"]["conditions"]["conditions"][0]
     assert condition["rightValue"] == 429
     assert "retry_after" in node_named("Wait for retry_after")["parameters"]["amount"]
@@ -344,3 +346,33 @@ def test_429_wait_reads_retry_after_from_the_recorded_body(tmp_path):
 def test_429_wait_defaults_to_one_second_without_retry_after(tmp_path):
     wait = node_named("Wait for retry_after")["parameters"]
     assert evaluate_expression(tmp_path, wait["amount"], {"statusCode": 429, "body": {}}) == 1
+
+
+@needs_node
+def test_429_wait_falls_back_to_retry_after_header_in_seconds(tmp_path):
+    wait = node_named("Wait for retry_after")["parameters"]
+    envelope = {"statusCode": 429, "body": "", "headers": {"retry-after": "2"}}
+    assert evaluate_expression(tmp_path, wait["amount"], envelope) == 2
+
+
+def check_delivery(tmp_path, envelope):
+    return run_code(tmp_path, node_named("Check delivery")["parameters"]["jsCode"], envelope)
+
+
+@needs_node
+def test_204_is_success_and_passes_through(tmp_path):
+    envelope = {"statusCode": 204, "body": "", "headers": {}}
+    result = check_delivery(tmp_path, envelope)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == envelope
+
+
+@needs_node
+@pytest.mark.parametrize("status", [400, 404, 429, 500])
+def test_non_2xx_after_post_fails_the_run(tmp_path, status):
+    # A 429 here means the single retry was also rate limited; any other error must not count as delivered.
+    result = check_delivery(tmp_path, {"statusCode": status, "body": {}, "headers": {}})
+    assert result.returncode != 0
+    assert f"HTTP {status}" in result.stderr
+
+
