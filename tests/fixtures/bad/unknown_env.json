@@ -1,0 +1,18 @@
+{
+  "id": "badUnknownEnv",
+  "name": "Bad fixture: env name not in .env.example",
+  "active": false,
+  "nodes": [
+    {
+      "id": "99999999-aaaa-4bbb-8ccc-ddddddddddd1",
+      "name": "Fetch feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 0],
+      "parameters": {
+        "url": "={{ $env.HUNTER_NOT_DECLARED_URL }}"
+      }
+    }
+  ],
+  "connections": {}
+}

@@ -1,0 +1,7 @@
+{
+  "id": "badDuplicateId",
+  "name": "Bad fixture: duplicate id, file A",
+  "active": false,
+  "nodes": [],
+  "connections": {}
+}
