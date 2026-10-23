@@ -1,0 +1,21 @@
+{
+  "execution": {
+    "id": "77",
+    "url": "https://n8n.example.test/workflow/watchOffers/executions/77",
+    "mode": "trigger",
+    "retryOf": null,
+    "lastNodeExecuted": "Read feed",
+    "error": {
+      "name": "NodeOperationError",
+      "message": "The service was not able to process your request",
+      "node": {
+        "name": "Read feed",
+        "type": "n8n-nodes-base.httpRequest"
+      }
+    }
+  },
+  "workflow": {
+    "id": "watchOffers",
+    "name": "Watch offers"
+  }
+}
