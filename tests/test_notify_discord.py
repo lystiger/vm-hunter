@@ -358,7 +358,8 @@ def test_error_report_wiring():
     assert doc["active"] is False
     trigger = node_named("Error input", ERROR_WORKFLOW)
     assert trigger["type"] == "n8n-nodes-base.errorTrigger"
-    assert doc["connections"]["Error input"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
+    assert doc["connections"]["Error input"]["main"] == [[{"node": "Count failure", "type": "main", "index": 0}]]
+    assert doc["connections"]["Count failure"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
     assert doc["connections"]["Build failure message"]["main"] == [[{"node": "Notify Discord", "type": "main", "index": 0}]]
     notify = node_named("Notify Discord", ERROR_WORKFLOW)["parameters"]["workflowId"]
     assert notify["value"] == load_workflow()["id"] == "notifyDiscord01"
@@ -511,3 +512,43 @@ def test_count_delivery_sits_after_the_delivery_check():
     assert load_workflow()["connections"]["Check delivery"]["main"] == [[{"node": "Count delivery", "type": "main", "index": 0}]]
 
 
+
+
+# Failure counts: the error report's Count failure node counts each failed run per workflow name, in its static data.
+def count_failure(tmp_path, payload, static_data):
+    """Run Count failure on one Error Trigger payload with the given static data. Returns the static data it wrote."""
+    code = node_named("Count failure", ERROR_WORKFLOW)["parameters"]["jsCode"]
+    context = {"input": payload, "nodes": {}, "staticData": static_data}
+    result = run_js(tmp_path, COUNT_RUNNER, code, context)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@needs_node
+def test_first_failure_of_a_workflow_counts_one_under_its_name(tmp_path):
+    payload = json.loads((FIXTURES / "error-trigger.input.json").read_text(encoding="utf-8"))
+    after = count_failure(tmp_path, payload, {})["metrics"]
+    assert after == {"counters": {"failures": {"Claim A1 VM": 1}}}
+
+
+@needs_node
+def test_failures_add_up_per_name_and_keep_the_rest_of_the_metrics(tmp_path):
+    metrics = {"day": "2026-10-23", "counters": {"failures": {"Claim A1 VM": 2, "Watch offers": 1}, "other": 7},
+               "alerted": {"failures-claim": True}}
+    payload = {"workflow": {"name": "Claim A1 VM"}, "execution": {}}
+    after = count_failure(tmp_path, payload, {"metrics": metrics})["metrics"]
+    assert after == {"day": "2026-10-23", "counters": {"failures": {"Claim A1 VM": 3, "Watch offers": 1}, "other": 7},
+                     "alerted": {"failures-claim": True}}
+
+
+@needs_node
+def test_missing_workflow_name_counts_under_unknown_workflow(tmp_path):
+    after = count_failure(tmp_path, {"execution": {}}, {})["metrics"]
+    assert after == {"counters": {"failures": {"unknown workflow": 1}}}
+
+
+def test_count_failure_sits_before_the_message_and_passes_the_payload_on():
+    assert node_named("Count failure", ERROR_WORKFLOW)["type"] == "n8n-nodes-base.code"
+    connections = load_workflow(ERROR_WORKFLOW)["connections"]
+    assert connections["Error input"]["main"] == [[{"node": "Count failure", "type": "main", "index": 0}]]
+    assert connections["Count failure"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
