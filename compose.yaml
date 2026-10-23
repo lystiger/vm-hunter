@@ -1,0 +1,23 @@
+# Local n8n for importing and checking the workflows in workflows/.
+# Import only: no workflow is activated, no port is published, and no real
+# credentials or environment values are passed in.
+#
+#   docker compose run --rm n8n import:workflow --separate --input=/workflows
+#
+# The pinned image is the index digest of n8nio/n8n:1.123.87. Re-resolve the
+# digest when you bump the tag; the tag alone is not enough to pin the image.
+services:
+  n8n:
+    image: n8nio/n8n:1.123.87@sha256:624a1f10f37119a73eca34c0cbd358668aebf0068d320ad5eae584f9d35aa314
+    # Throwaway data folder (git-ignored). Holds the n8n database and nothing else.
+    volumes:
+      - ./.n8n-local:/home/node/.n8n
+      # Workflow JSON, read-only inside the container.
+      - ./workflows:/workflows:ro
+    environment:
+      # Fake or non-secret values only. Real values belong on the VM, never here.
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+    # No ports: nothing is reachable from the host or the network.
+    restart: "no"
