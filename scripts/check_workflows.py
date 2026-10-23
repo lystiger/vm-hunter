@@ -176,12 +176,23 @@ def check_document(name, doc, env_names):
 
     launches = [node["name"] for node in nodes if is_oracle_launch(node) and isinstance(node.get("name"), str)]
     guards = {node_name for node_name in names if COST_GUARD_NAME.search(node_name)}
-    # Every launch path must pass the guard: walk from each entry node (no incoming connection) and do not
-    # expand through a guard node. A launch that is still reached can run without the guard.
-    incoming = {target for targets in edges.values() for target in targets}
-    entries = [name for name in names if name not in incoming and name not in guards]
+    # Every launch path must pass the guard. Start from each non-guard node that no node outside its own
+    # cycle can reach (a source component). A trigger wired back from its launch has an incoming edge, so
+    # "no incoming edge" alone would miss it. Walk from the starts without expanding through a guard node:
+    # a launch that is still reached can run without the guard.
+    reach = {}
+    for start in names:
+        seen, stack = set(), [start]
+        while stack:
+            current = stack.pop()
+            if current not in seen:
+                seen.add(current)
+                stack.extend(edges.get(current, ()))
+        reach[start] = seen
+    sources = [name for name in names if name not in guards
+               and all(other in reach[name] for other in names if name in reach[other])]
     unguarded = set()
-    stack = list(entries)
+    stack = list(sources)
     while stack:
         current = stack.pop()
         if current in unguarded:

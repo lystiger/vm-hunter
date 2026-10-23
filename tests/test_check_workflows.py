@@ -129,3 +129,9 @@ def test_rule_oracle_launch_without_cost_guard():
 def test_rule_oracle_launch_bypasses_cost_guard():
     errors = cw.check_files([bad("launch_bypasses_cost_guard.json")], ENV_EXAMPLE)
     assert rules_of(errors) == {"oracle-launch-without-cost-guard"}
+
+
+def test_rule_oracle_launch_bypasses_cost_guard_through_cycle():
+    # Trigger and launch wired both ways: no node has zero incoming edges, yet the launch is still reachable.
+    errors = cw.check_files([bad("launch_cycle_bypasses_cost_guard.json")], ENV_EXAMPLE)
+    assert rules_of(errors) == {"oracle-launch-without-cost-guard"}
