@@ -1,0 +1,5 @@
+{
+  "kind": "alert",
+  "title": "Claimer stalled: no attempt for 2 hours",
+  "body": "Last attempt 2026-10-23T06:00:00Z. Still hunting for a free A1 shape."
+}

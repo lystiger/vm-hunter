@@ -1,0 +1,8 @@
+{
+  "request_url": "https://discord.test/webhook?thread_id=100000000000000002",
+  "statusCode": 204,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": ""
+}

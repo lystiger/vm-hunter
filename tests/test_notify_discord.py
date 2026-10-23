@@ -51,12 +51,38 @@ new Function('$input', '$', '$getWorkflowStaticData', code)({ first: () => ({ js
 process.stdout.write(JSON.stringify(ctx.staticData));
 """
 
-# Evaluates one n8n expression body (the text inside ={{ }}) with $json bound to the given item.
+# Chains the Check delivery body and then the Count delivery body, the way n8n runs them: a throw in Check delivery stops
+# the run before Count delivery. Prints the static data as it stands and whether the run succeeded, so a test can see
+# that a failed run left the counters alone.
+CHAIN_RUNNER = """
+const fs = require('fs');
+const check = fs.readFileSync(process.argv[2], 'utf8');
+const count = fs.readFileSync(process.argv[3], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const run = (code, input) => new Function('$input', '$', '$getWorkflowStaticData', code)(
+  { first: () => ({ json: input }) }, $, () => staticData);
+let ok = true;
+let error = null;
+try {
+  const checked = run(check, ctx.input);
+  run(count, checked[0].json);
+} catch (e) {
+  ok = false;
+  error = e.message;
+}
+process.stdout.write(JSON.stringify({ ok, error, staticData }));
+"""
+
+# Evaluates one n8n expression body (the text inside ={{ }}) with $json, $env and $('Name') bound, as n8n does.
+# The context file holds json (the item), env and nodes (earlier node outputs by name).
 EXPRESSION_RUNNER = """
 const fs = require('fs');
 const expr = fs.readFileSync(process.argv[2], 'utf8');
-const json = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-process.stdout.write(JSON.stringify(new Function('$json', 'return (' + expr + ');')(json)));
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+process.stdout.write(JSON.stringify(new Function('$json', '$env', '$', 'return (' + expr + ');')(ctx.json, ctx.env ?? {}, $)));
 """
 
 
@@ -104,19 +130,32 @@ def build_failure(tmp_path, item):
     return json.loads(result.stdout)
 
 
-def evaluate_expression(tmp_path, expression, item):
+def evaluate_expression(tmp_path, expression, item, env=None, nodes=None):
     """Evaluate an n8n expression such as '={{ ... }}' on one item, the way the Wait node reads it."""
     assert expression.startswith("={{") and expression.endswith("}}"), expression
     expr_path = tmp_path / "expr.js"
     expr_path.write_text(expression[3:-2].strip(), encoding="utf-8")
     runner_path = tmp_path / "expr-runner.js"
     runner_path.write_text(EXPRESSION_RUNNER, encoding="utf-8")
-    item_path = tmp_path / "item.json"
-    item_path.write_text(json.dumps(item), encoding="utf-8")
-    result = subprocess.run([NODE, str(runner_path), str(expr_path), str(item_path)],
+    context_path = tmp_path / "expr-context.json"
+    context_path.write_text(json.dumps({"json": item, "env": env or {}, "nodes": nodes or {}}), encoding="utf-8")
+    result = subprocess.run([NODE, str(runner_path), str(expr_path), str(context_path)],
                             capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def render_template(tmp_path, template, item, env=None, nodes=None):
+    """Render an n8n string field such as '={{ $env.X }}?thread_id={{ $json.id }}': each {{ }} is evaluated, the rest is text."""
+    parts = re.split(r"\{\{(.*?)\}\}", template.removeprefix("="))
+    rendered = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            value = evaluate_expression(tmp_path, "={{" + part + "}}", item, env, nodes)
+            rendered.append(str(value))
+        else:
+            rendered.append(part)
+    return "".join(rendered)
 
 
 def fixture(name):
@@ -552,3 +591,195 @@ def test_count_failure_sits_before_the_message_and_passes_the_payload_on():
     connections = load_workflow(ERROR_WORKFLOW)["connections"]
     assert connections["Error input"]["main"] == [[{"node": "Count failure", "type": "main", "index": 0}]]
     assert connections["Count failure"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
+
+
+# Recorded inputs for the cases below. Fake ids only: the thread settings are the fixture's, the webhook is discord.test.
+WEBHOOK = "https://discord.test/webhook"
+THREAD_ENV = json.loads((FIXTURES / "thread-settings.env.json").read_text(encoding="utf-8"))
+THREAD_IDS = {
+    "offer": THREAD_ENV["HUNTER_DISCORD_THREAD_OFFERS"],
+    "claim": THREAD_ENV["HUNTER_DISCORD_THREAD_CLAIMS"],
+    "failure": THREAD_ENV["HUNTER_DISCORD_THREAD_FAILURES"],
+    "summary": THREAD_ENV["HUNTER_DISCORD_THREAD_SUMMARY"],
+    "alert": THREAD_ENV["HUNTER_DISCORD_THREAD_SUMMARY"],
+}
+FALLBACK_ID = THREAD_ENV["HUNTER_DISCORD_THREAD_ID"]
+METRICS_DAY = "2026-10-23"  # the day the counters belong to, passed in explicitly: no node reads the clock
+FAILED_500 = {"statusCode": 500, "body": {"message": "500: Internal Server Error"}, "headers": {}}
+
+
+def response(name):
+    return json.loads((FIXTURES / f"{name}.response.json").read_text(encoding="utf-8"))
+
+
+def resolved_thread(tmp_path, kind, env):
+    result = resolve_thread(tmp_path, kind, env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def deliver(tmp_path, first, final, static_data):
+    """Run Check delivery then Count delivery, as the notifier does after a post that got first and ended at final."""
+    code_dir = tmp_path / "chain"
+    code_dir.mkdir(exist_ok=True)
+    check_path = code_dir / "check.js"
+    check_path.write_text(node_named("Check delivery")["parameters"]["jsCode"], encoding="utf-8")
+    count_path = code_dir / "count.js"
+    count_path.write_text(node_named("Count delivery")["parameters"]["jsCode"], encoding="utf-8")
+    runner_path = code_dir / "chain-runner.js"
+    runner_path.write_text(CHAIN_RUNNER, encoding="utf-8")
+    context_path = code_dir / "chain-context.json"
+    context_path.write_text(json.dumps({"input": final, "nodes": {"Post to Discord": first}, "staticData": static_data}),
+                            encoding="utf-8")
+    result = subprocess.run([NODE, str(runner_path), str(check_path), str(count_path), str(context_path)],
+                            capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def count_failures(tmp_path, payloads):
+    """Run Count failure once per payload, feeding each run's static data into the next, as n8n saves it between runs."""
+    static_data = {}
+    for payload in payloads:
+        static_data = count_failure(tmp_path, payload, static_data)
+    return static_data
+
+
+# (a) Thread selection, per kind: a blank or unset kind setting falls back, and a missing thread id fails clearly.
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_fixture_env_routes_each_kind_to_its_own_setting(tmp_path, kind):
+    assert resolved_thread(tmp_path, kind, THREAD_ENV)["threadId"] == THREAD_IDS[kind]
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_kind_setting_falls_back_per_kind(tmp_path, kind, blank):
+    env = dict(THREAD_ENV, **{THREAD_SETTING[kind]: blank})
+    assert resolved_thread(tmp_path, kind, env)["threadId"] == FALLBACK_ID
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_unset_kind_setting_falls_back_per_kind(tmp_path, kind):
+    env = {key: value for key, value in THREAD_ENV.items() if key != THREAD_SETTING[kind]}
+    assert resolved_thread(tmp_path, kind, env)["threadId"] == FALLBACK_ID
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_no_thread_id_names_the_kind_and_both_settings_per_kind(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {THREAD_SETTING[kind]: "", "HUNTER_DISCORD_THREAD_ID": "  "})
+    assert result.returncode != 0
+    assert f"no Discord thread for kind '{kind}'" in result.stderr
+    assert f"(checked {THREAD_SETTING[kind]}, HUNTER_DISCORD_THREAD_ID)" in result.stderr
+
+
+@needs_node
+def test_summary_and_alert_both_go_to_the_summary_thread_whatever_the_other_settings_say(tmp_path):
+    for kind in ("summary", "alert"):
+        assert resolved_thread(tmp_path, kind, THREAD_ENV)["threadId"] == THREAD_IDS["summary"]
+    # Only the summary setting and the fallback are set: neither kind uses the fallback.
+    only_summary = {"HUNTER_DISCORD_THREAD_SUMMARY": "555", "HUNTER_DISCORD_THREAD_ID": "999"}
+    for kind in ("summary", "alert"):
+        assert resolved_thread(tmp_path, kind, only_summary)["threadId"] == "555"
+
+
+# (c) Summary and alert inputs, recorded: the expected Discord bodies, and the thread each one resolves to.
+@needs_node
+@pytest.mark.parametrize("name", ["summary", "alert"])
+def test_summary_and_alert_fixtures_match_expected_payloads_and_route_to_summary(tmp_path, name):
+    notify_input = fixture(name)
+    message = format_message(tmp_path, notify_input)
+    assert message == expected(name)
+    code = node_named("Resolve thread")["parameters"]["jsCode"]
+    result = run_code(tmp_path, code, message, env=THREAD_ENV, nodes={"Notify input": notify_input})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"threadId": THREAD_IDS["summary"], "message": message}
+
+
+# (b) The URL carries ?thread_id= on the first POST and on the 429 retry, built from the resolved thread.
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_first_post_url_carries_the_thread_id_per_kind(tmp_path, kind):
+    resolved = resolved_thread(tmp_path, kind, THREAD_ENV)
+    url = render_template(tmp_path, POST_URL, resolved, env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK})
+    assert url == f"{WEBHOOK}?thread_id={THREAD_IDS[kind]}"
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_429_retry_url_carries_the_same_thread_id_per_kind(tmp_path, kind):
+    resolved = resolved_thread(tmp_path, kind, THREAD_ENV)
+    # The retry reads the thread from Resolve thread, not from the 429 response it follows, which has no thread id.
+    url = render_template(tmp_path, RETRY_URL, response("discord-429"), env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK},
+                          nodes={"Resolve thread": resolved})
+    assert url == f"{WEBHOOK}?thread_id={THREAD_IDS[kind]}"
+
+
+@needs_node
+def test_retry_url_uses_the_fallback_thread_when_the_kind_setting_is_blank(tmp_path):
+    env = dict(THREAD_ENV, HUNTER_DISCORD_THREAD_CLAIMS="")
+    resolved = resolved_thread(tmp_path, "claim", env)
+    url = render_template(tmp_path, RETRY_URL, response("discord-429"), env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK},
+                          nodes={"Resolve thread": resolved})
+    assert url == f"{WEBHOOK}?thread_id={FALLBACK_ID}"
+
+
+# (e) Counters: sent and rateLimited move only on a successful run; a failed run leaves them as they were.
+@needs_node
+def test_204_run_counts_sent_only(tmp_path):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 4, "rateLimited": 1}}
+    result = deliver(tmp_path, response("discord-204"), response("discord-204"), {"metrics": metrics})
+    assert result["ok"] is True
+    assert result["staticData"]["metrics"] == {"day": METRICS_DAY, "counters": {"sent": 5, "rateLimited": 1}}
+
+
+@needs_node
+def test_429_then_204_run_counts_sent_and_rate_limited(tmp_path):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 0, "rateLimited": 2}}
+    result = deliver(tmp_path, response("discord-429"), response("discord-204"), {"metrics": metrics})
+    assert result["ok"] is True
+    assert result["staticData"]["metrics"] == {"day": METRICS_DAY, "counters": {"sent": 1, "rateLimited": 3}}
+
+
+@needs_node
+def test_repeated_runs_add_up_across_204_and_429_then_204(tmp_path):
+    static_data = {}
+    for first in (response("discord-204"), response("discord-429"), response("discord-204")):
+        static_data = deliver(tmp_path, first, response("discord-204"), static_data)["staticData"]
+    assert static_data["metrics"]["counters"] == {"sent": 3, "rateLimited": 1}
+
+
+@needs_node
+@pytest.mark.parametrize("first,final", [
+    (response("discord-429"), FAILED_500),
+    (response("discord-429"), response("discord-429")),
+    (FAILED_500, FAILED_500),
+])
+def test_failed_run_leaves_the_counters_unchanged(tmp_path, first, final):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 4, "rateLimited": 1}}
+    before = {"metrics": metrics}
+    result = deliver(tmp_path, first, final, before)
+    assert result["ok"] is False
+    assert f"HTTP {final['statusCode']}" in result["error"]
+    # Count delivery never ran: with no metrics it would have written counters, so an empty start stays empty.
+    assert deliver(tmp_path, first, final, {})["staticData"] == {}
+    assert result["staticData"] == before
+
+
+# (f) Error report failures: counted per workflow name over repeated failures, in the error workflow's static data.
+@needs_node
+def test_two_workflow_names_and_repeated_failures_count_separately(tmp_path):
+    claim = fixture("error-trigger")
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = count_failures(tmp_path, [claim, watch, claim, claim, watch, claim])
+    assert static_data["metrics"]["counters"]["failures"] == {"Claim A1 VM": 4, "Watch offers": 2}
+
+
+@needs_node
+def test_repeated_failures_of_one_workflow_keep_counting(tmp_path):
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = count_failures(tmp_path, [watch] * 5)
+    assert static_data["metrics"]["counters"]["failures"] == {"Watch offers": 5}
