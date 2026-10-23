@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Runs every check for this repository, in order, and prints a PASS/FAIL summary:
+#   1. static workflow checks (scripts/check_workflows.py)
+#   2. pytest suite (.venv)
+#   3. local n8n import of every workflows/*.json (pinned image from compose.yaml)
+# Never activates workflows, calls live services, runs git, or deploys.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Throwaway n8n data folder (git-ignored, see compose.yaml). Recreated fresh on every run.
+DATA_DIR="$ROOT/.n8n-local"
+# Unique compose project so the containers never collide with a running local n8n.
+PROJECT="vmhunter-check-$$"
+
+STEPS=()
+RESULTS=()
+
+record() {
+  # record <step name> <PASS|FAIL|SKIP>
+  STEPS+=("$1")
+  RESULTS+=("$2")
+}
+
+compose() {
+  docker compose -p "$PROJECT" -f "$ROOT/compose.yaml" "$@"
+}
+
+cleanup() {
+  # Always tear the container down and clean the data folder, even on failure or Ctrl-C.
+  compose down --remove-orphans -v >/dev/null 2>&1 || true
+  if [ -d "$DATA_DIR" ]; then
+    rm -rf "$DATA_DIR" 2>/dev/null || \
+      docker run --rm -v "$DATA_DIR:/data" --entrypoint sh n8nio/n8n:1.123.87 -c 'rm -rf /data/* /data/.[!.]*' >/dev/null 2>&1 || true
+    rm -rf "$DATA_DIR" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+summary() {
+  local failed=0 i
+  echo
+  echo "==== check summary ===="
+  for i in "${!STEPS[@]}"; do
+    printf '%-4s %s\n' "${RESULTS[$i]}" "${STEPS[$i]}"
+    [ "${RESULTS[$i]}" = "FAIL" ] && failed=1
+  done
+  if [ "$failed" -eq 0 ]; then
+    echo "RESULT: PASS"
+  else
+    echo "RESULT: FAIL"
+  fi
+  return "$failed"
+}
+
+# ---- 1. static workflow checks -------------------------------------------------
+echo "==== [1/3] static workflow checks ===="
+if python3 scripts/check_workflows.py; then
+  record "static workflow checks" PASS
+else
+  record "static workflow checks" FAIL
+fi
+
+# ---- 2. tests ------------------------------------------------------------------
+echo
+echo "==== [2/3] tests (.venv) ===="
+if [ ! -x .venv/bin/python ]; then
+  echo "FAIL: .venv is missing or has no python. Create it first, e.g. python3 -m venv .venv && .venv/bin/pip install pytest" >&2
+  record "tests (.venv missing)" FAIL
+elif .venv/bin/python -m pytest -q; then
+  record "tests" PASS
+else
+  record "tests" FAIL
+fi
+
+# ---- 3. local n8n import -------------------------------------------------------
+echo
+echo "==== [3/3] local n8n import ===="
+shopt -s nullglob
+WORKFLOWS=("$ROOT"/workflows/*.json)
+shopt -u nullglob
+
+if [ "${#WORKFLOWS[@]}" -eq 0 ]; then
+  echo "SKIP: no workflows/*.json files to import."
+  record "local n8n import (no workflows)" SKIP
+elif ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "FAIL: docker is not available, so the local n8n import cannot run." >&2
+  record "local n8n import (docker unavailable)" FAIL
+else
+  rm -rf "$DATA_DIR"
+  mkdir -p "$DATA_DIR"
+
+  import_failed=0
+  echo "Starting pinned n8n and importing ${#WORKFLOWS[@]} workflow(s) (no activation, no ports)."
+  for wf in "${WORKFLOWS[@]}"; do
+    name="$(basename "$wf")"
+    if compose run --rm --no-deps n8n import:workflow "--input=/workflows/$name"; then
+      echo "  import OK:   $name"
+    else
+      echo "  import FAIL: $name" >&2
+      import_failed=1
+    fi
+  done
+
+  if [ "$import_failed" -eq 0 ]; then
+    record "local n8n import (${#WORKFLOWS[@]} file(s))" PASS
+  else
+    record "local n8n import (${#WORKFLOWS[@]} file(s))" FAIL
+  fi
+fi
+
+summary
