@@ -27,14 +27,28 @@ LIMIT_CONTENT = 2000
 LIMIT_DESCRIPTION = 4096
 LIMIT_EMBEDS = 10
 
-# Runs the Code node body the way n8n does: $input.first() gives the item, the body returns the output items.
+# Runs the Code node body the way n8n does: $input.first() gives the item, $env the environment, $('Name') an earlier
+# node's output and $getWorkflowStaticData the static data. The context file holds input, env, nodes and staticData.
 RUNNER = """
 const fs = require('fs');
 const code = fs.readFileSync(process.argv[2], 'utf8');
-const input = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-const run = new Function('$input', code);
-const out = run({ first: () => ({ json: input }) });
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const run = new Function('$input', '$env', '$', '$getWorkflowStaticData', code);
+const out = run({ first: () => ({ json: ctx.input }) }, ctx.env ?? {}, $, () => staticData);
 process.stdout.write(JSON.stringify(out[0].json));
+"""
+
+# Runs the Count delivery body with $getWorkflowStaticData bound to the context's staticData, then prints that static
+# data, so a test passes the metrics object in and reads back what the node wrote.
+COUNT_RUNNER = """
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+new Function('$input', '$', '$getWorkflowStaticData', code)({ first: () => ({ json: ctx.input }) }, $, () => ctx.staticData);
+process.stdout.write(JSON.stringify(ctx.staticData));
 """
 
 # Evaluates one n8n expression body (the text inside ={{ }}) with $json bound to the given item.
@@ -54,16 +68,21 @@ def node_named(name, path=WORKFLOW):
     return next(node for node in load_workflow(path)["nodes"] if node["name"] == name)
 
 
-def run_code(tmp_path, code, item):
-    """Run one Code node body on one input item. Returns the CompletedProcess."""
+def run_js(tmp_path, runner, code, context):
+    """Write the code, the runner and the context to tmp_path and run them under node. Returns the CompletedProcess."""
     code_path = tmp_path / "code.js"
     code_path.write_text(code, encoding="utf-8")
     runner_path = tmp_path / "runner.js"
-    runner_path.write_text(RUNNER, encoding="utf-8")
-    input_path = tmp_path / "input.json"
-    input_path.write_text(json.dumps(item), encoding="utf-8")
-    return subprocess.run([NODE, str(runner_path), str(code_path), str(input_path)],
+    runner_path.write_text(runner, encoding="utf-8")
+    context_path = tmp_path / "context.json"
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    return subprocess.run([NODE, str(runner_path), str(code_path), str(context_path)],
                           capture_output=True, text=True, timeout=30, check=False)
+
+
+def run_code(tmp_path, code, item, env=None, nodes=None):
+    """Run one Code node body on one input item, with optional $env values and earlier node outputs."""
+    return run_js(tmp_path, RUNNER, code, {"input": item, "env": env or {}, "nodes": nodes or {}})
 
 
 def run_format(tmp_path, item):
@@ -197,11 +216,22 @@ def test_node_ids_are_unique_uuids():
         assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", node_id), node_id
 
 
+POST_URL = "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id={{ encodeURIComponent($json.threadId) }}"
+RETRY_URL = ("={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id="
+             "{{ encodeURIComponent($('Resolve thread').first().json.threadId) }}")
+
+
 def test_webhook_comes_from_environment_and_never_throws_on_4xx():
     for name in ("Post to Discord", "Retry once"):
         params = node_named(name)["parameters"]
-        assert params["url"] == "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}"
+        assert params["url"] == {"Post to Discord": POST_URL, "Retry once": RETRY_URL}[name]
         assert params["options"]["response"]["response"] == {"fullResponse": True, "neverError": True}
+
+
+@needs_node
+def test_thread_id_is_url_encoded_in_the_post_url(tmp_path):
+    assert evaluate_expression(tmp_path, "={{ encodeURIComponent($json.threadId) }}",
+                               {"threadId": "a b/1?x"}) == "a%20b%2F1%3Fx"
 
 
 def test_429_branch_waits_retry_after_then_retries_once_without_loop():
@@ -211,17 +241,24 @@ def test_429_branch_waits_retry_after_then_retries_once_without_loop():
     assert rate_limited == [[{"node": "Wait for retry_after", "type": "main", "index": 0}],
                             [{"node": "Check delivery", "type": "main", "index": 0}]]
     assert connections["Wait for retry_after"]["main"] == [[{"node": "Retry once", "type": "main", "index": 0}]]
-    # The retry goes only to the delivery check, which has no outgoing connection, so nothing loops back.
+    # The retry goes only to the delivery check, which goes only to the counter, which has no outgoing connection.
     assert connections["Retry once"]["main"] == [[{"node": "Check delivery", "type": "main", "index": 0}]]
-    assert "Check delivery" not in connections
+    assert connections["Check delivery"]["main"] == [[{"node": "Count delivery", "type": "main", "index": 0}]]
+    assert "Count delivery" not in connections
     condition = node_named("Rate limited?")["parameters"]["conditions"]["conditions"][0]
     assert condition["rightValue"] == 429
     assert "retry_after" in node_named("Wait for retry_after")["parameters"]["amount"]
 
 
-def test_retry_resends_the_formatted_payload():
-    body = node_named("Retry once")["parameters"]["jsonBody"]
-    assert body == "={{ $('Format message').first().json }}"
+def test_retry_resends_the_resolved_message_to_the_same_thread():
+    assert node_named("Retry once")["parameters"]["jsonBody"] == "={{ $('Resolve thread').first().json.message }}"
+    assert node_named("Post to Discord")["parameters"]["jsonBody"] == "={{ $json.message }}"
+
+
+def test_message_flows_format_then_thread_then_post():
+    connections = load_workflow()["connections"]
+    assert connections["Format message"]["main"] == [[{"node": "Resolve thread", "type": "main", "index": 0}]]
+    assert connections["Resolve thread"]["main"] == [[{"node": "Post to Discord", "type": "main", "index": 0}]]
 
 
 @needs_node
@@ -374,5 +411,103 @@ def test_non_2xx_after_post_fails_the_run(tmp_path, status):
     result = check_delivery(tmp_path, {"statusCode": status, "body": {}, "headers": {}})
     assert result.returncode != 0
     assert f"HTTP {status}" in result.stderr
+
+
+# Thread routing: which setting each kind reads, with HUNTER_DISCORD_THREAD_ID as the fallback.
+THREAD_SETTING = {
+    "offer": "HUNTER_DISCORD_THREAD_OFFERS",
+    "claim": "HUNTER_DISCORD_THREAD_CLAIMS",
+    "failure": "HUNTER_DISCORD_THREAD_FAILURES",
+    "summary": "HUNTER_DISCORD_THREAD_SUMMARY",
+    "alert": "HUNTER_DISCORD_THREAD_SUMMARY",
+}
+MESSAGE = {"username": "VM Hunter", "content": "t", "embeds": []}
+
+
+def resolve_thread(tmp_path, kind, env):
+    """Run the Resolve thread node for one kind with the given environment. Returns the CompletedProcess."""
+    code = node_named("Resolve thread")["parameters"]["jsCode"]
+    return run_code(tmp_path, code, MESSAGE, env=env, nodes={"Notify input": {"kind": kind, "title": "t"}})
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_each_kind_uses_its_own_thread_setting(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {THREAD_SETTING[kind]: "111", "HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"threadId": "111", "message": MESSAGE}
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_unset_setting_falls_back_to_thread_id(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {"HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["threadId"] == "999"
+
+
+@needs_node
+@pytest.mark.parametrize("blank", ["", "   ", "\t \n"])
+def test_blank_setting_counts_as_unset(tmp_path, blank):
+    result = resolve_thread(tmp_path, "claim", {"HUNTER_DISCORD_THREAD_CLAIMS": blank, "HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["threadId"] == "999"
+
+
+@needs_node
+def test_setting_value_is_trimmed(tmp_path):
+    result = resolve_thread(tmp_path, "offer", {"HUNTER_DISCORD_THREAD_OFFERS": " 123 \n"})
+    assert json.loads(result.stdout)["threadId"] == "123"
+
+
+@needs_node
+def test_no_thread_id_fails_naming_the_kind_and_the_settings_checked(tmp_path):
+    result = resolve_thread(tmp_path, "claim", {"HUNTER_DISCORD_THREAD_CLAIMS": " ", "HUNTER_DISCORD_THREAD_ID": ""})
+    assert result.returncode != 0
+    assert "kind 'claim'" in result.stderr
+    assert "HUNTER_DISCORD_THREAD_CLAIMS, HUNTER_DISCORD_THREAD_ID" in result.stderr
+
+
+@needs_node
+@pytest.mark.parametrize("kind,colour", [("summary", 0x95A5A6), ("alert", 0xF39C12)])
+def test_summary_and_alert_kinds_are_accepted_with_their_colour(tmp_path, kind, colour):
+    out = format_message(tmp_path, {"kind": kind, "title": "Daily summary", "body": "Claimer · 3 attempts"})
+    assert out["embeds"] == [{"color": colour, "description": "Claimer · 3 attempts"}]
+
+
+# Counters: the Count delivery node runs only after a 2xx, so it counts only successful runs.
+def count_delivery(tmp_path, first_status, final_status, static_data):
+    """Run Count delivery after a first post that got first_status and a final 2xx. Returns the static data it wrote."""
+    code = node_named("Count delivery")["parameters"]["jsCode"]
+    context = {"input": {"statusCode": final_status, "body": "", "headers": {}},
+               "nodes": {"Post to Discord": {"statusCode": first_status}}, "staticData": static_data}
+    result = run_js(tmp_path, COUNT_RUNNER, code, context)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@needs_node
+def test_204_counts_sent_and_keeps_the_rest_of_the_metrics(tmp_path):
+    metrics = {"day": "2026-10-23", "counters": {"sent": 4, "rateLimited": 1},
+               "lastSuccessAt": {"offers": "2026-10-23T08:00:00Z"}, "alerted": {"claimer-stalled": True}}
+    after = count_delivery(tmp_path, 204, 204, {"metrics": metrics})["metrics"]
+    assert after == dict(metrics, counters={"sent": 5, "rateLimited": 1})
+
+
+@needs_node
+def test_429_then_204_counts_sent_and_rate_limited(tmp_path):
+    after = count_delivery(tmp_path, 429, 204, {"metrics": {"counters": {"sent": 0, "rateLimited": 2}}})
+    assert after["metrics"]["counters"] == {"sent": 1, "rateLimited": 3}
+
+
+@needs_node
+def test_counters_start_at_zero_without_metrics(tmp_path):
+    assert count_delivery(tmp_path, 204, 204, {})["metrics"]["counters"] == {"sent": 1, "rateLimited": 0}
+
+
+def test_count_delivery_sits_after_the_delivery_check():
+    # Check delivery throws on a non-2xx, so a failed run never reaches the counter (see the monitoring skill).
+    assert node_named("Count delivery")["type"] == "n8n-nodes-base.code"
+    assert load_workflow()["connections"]["Check delivery"]["main"] == [[{"node": "Count delivery", "type": "main", "index": 0}]]
 
 
