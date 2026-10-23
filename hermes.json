@@ -1,0 +1,5 @@
+{
+  "checks": [
+    {"name": "check", "command": "./scripts/check", "timeout_seconds": 900}
+  ]
+}
