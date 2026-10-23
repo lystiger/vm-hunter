@@ -124,3 +124,8 @@ def test_rule_undeclared_env():
 def test_rule_oracle_launch_without_cost_guard():
     errors = cw.check_files([bad("launch_without_cost_guard.json")], ENV_EXAMPLE)
     assert rules_of(errors) == {"oracle-launch-without-cost-guard"}
+
+
+def test_rule_oracle_launch_bypasses_cost_guard():
+    errors = cw.check_files([bad("launch_bypasses_cost_guard.json")], ENV_EXAMPLE)
+    assert rules_of(errors) == {"oracle-launch-without-cost-guard"}

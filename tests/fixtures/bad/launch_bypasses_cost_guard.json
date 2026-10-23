@@ -1,0 +1,48 @@
+{
+  "id": "badLaunchBypassesGuard",
+  "name": "Bad fixture: Oracle launch reachable without the cost guard",
+  "active": false,
+  "nodes": [
+    {
+      "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffff01",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffff02",
+      "name": "Cost guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, -100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Cost guard: pass only the free shape within the free limits.\nreturn $input.all();"
+      }
+    },
+    {
+      "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffff03",
+      "name": "Launch instance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HUNTER_OCI_API_BASE }}/20160918/instances"
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": {
+      "main": [
+        [
+          { "node": "Cost guard", "type": "main", "index": 0 },
+          { "node": "Launch instance", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Cost guard": { "main": [[]] }
+  }
+}
