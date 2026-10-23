@@ -1,0 +1,10 @@
+{
+  "username": "VM Hunter",
+  "content": "Workflow failed: Claim A1 VM\nhttps://n8n.example.test/workflow/claimA1/executions/42",
+  "embeds": [
+    {
+      "color": 15158332,
+      "description": "Node: Launch instance\nError: Request failed with status code 500"
+    }
+  ]
+}

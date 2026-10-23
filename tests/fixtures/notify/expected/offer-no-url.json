@@ -1,0 +1,10 @@
+{
+  "username": "VM Hunter",
+  "content": "1 new free offer",
+  "embeds": [
+    {
+      "color": 3447003,
+      "description": "- Sample Labs: free dev instance"
+    }
+  ]
+}
