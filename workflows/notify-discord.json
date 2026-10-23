@@ -19,7 +19,18 @@
       "position": [220, 0],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Format message: turn one notify input {kind, title, body, url, attempts?, region?, shape?} into a Discord payload.\n// Limits: content 2000 characters, embed description 4096, at most 10 embeds. Longer text is cut with '…'.\nconst LIMIT_CONTENT = 2000;\nconst LIMIT_DESCRIPTION = 4096;\nconst LIMIT_FIELD_VALUE = 1024;\nconst LIMIT_EMBEDS = 10;\nconst COLORS = { offer: 0x3498db, claim: 0x2ecc71, failure: 0xe74c3c };\n\n// Cut text to max characters (code points). Adds '…' only when it had to cut.\nfunction clip(text, max) {\n  const chars = Array.from(String(text ?? ''));\n  return chars.length <= max ? chars.join('') : chars.slice(0, max - 1).join('') + '…';\n}\n\nconst item = $input.first().json;\nif (!Object.hasOwn(COLORS, item.kind)) {\n  throw new Error(`notify-discord: unknown kind '${item.kind}'`);\n}\nif (!item.title) {\n  throw new Error('notify-discord: title is required');\n}\n\n// Claim results carry the attempt count, region and shape as optional fields.\nconst fields = [];\nif (item.kind === 'claim') {\n  if (item.attempts !== undefined) fields.push({ name: 'Attempts', value: String(item.attempts), inline: true });\n  if (item.region) fields.push({ name: 'Region', value: clip(item.region, LIMIT_FIELD_VALUE), inline: true });\n  if (item.shape) fields.push({ name: 'Shape', value: clip(item.shape, LIMIT_FIELD_VALUE), inline: true });\n}\n\n// The URL goes in the content so Discord shows it as a clickable link.\nconst content = clip([item.title, item.url].filter(Boolean).join('\\n'), LIMIT_CONTENT);\n\nconst embed = { color: COLORS[item.kind] };\nif (item.body) embed.description = clip(item.body, LIMIT_DESCRIPTION);\nif (fields.length) embed.fields = fields;\nconst embeds = (embed.description || fields.length ? [embed] : []).slice(0, LIMIT_EMBEDS);\n\nreturn [{ json: { username: 'VM Hunter', content, embeds } }];"
+        "jsCode": "// Format message: turn one notify input {kind, title, body, url, attempts?, region?, shape?} into a Discord payload.\n// Limits: content 2000 characters, embed description 4096, at most 10 embeds. Longer text is cut with '…'.\nconst LIMIT_CONTENT = 2000;\nconst LIMIT_DESCRIPTION = 4096;\nconst LIMIT_FIELD_VALUE = 1024;\nconst LIMIT_EMBEDS = 10;\nconst COLORS = { offer: 0x3498db, claim: 0x2ecc71, failure: 0xe74c3c, summary: 0x95a5a6, alert: 0xf39c12 };\n\n// Cut text to max characters (code points). Adds '…' only when it had to cut.\nfunction clip(text, max) {\n  const chars = Array.from(String(text ?? ''));\n  return chars.length <= max ? chars.join('') : chars.slice(0, max - 1).join('') + '…';\n}\n\nconst item = $input.first().json;\nif (!Object.hasOwn(COLORS, item.kind)) {\n  throw new Error(`notify-discord: unknown kind '${item.kind}'`);\n}\nif (!item.title) {\n  throw new Error('notify-discord: title is required');\n}\n\n// Claim results carry the attempt count, region and shape as optional fields.\nconst fields = [];\nif (item.kind === 'claim') {\n  if (item.attempts !== undefined) fields.push({ name: 'Attempts', value: String(item.attempts), inline: true });\n  if (item.region) fields.push({ name: 'Region', value: clip(item.region, LIMIT_FIELD_VALUE), inline: true });\n  if (item.shape) fields.push({ name: 'Shape', value: clip(item.shape, LIMIT_FIELD_VALUE), inline: true });\n}\n\n// The URL goes in the content so Discord shows it as a clickable link.\nconst content = clip([item.title, item.url].filter(Boolean).join('\\n'), LIMIT_CONTENT);\n\nconst embed = { color: COLORS[item.kind] };\nif (item.body) embed.description = clip(item.body, LIMIT_DESCRIPTION);\nif (fields.length) embed.fields = fields;\nconst embeds = (embed.description || fields.length ? [embed] : []).slice(0, LIMIT_EMBEDS);\n\nreturn [{ json: { username: 'VM Hunter', content, embeds } }];"
+      }
+    },
+    {
+      "id": "7b1e2d94-5c3a-4f08-8e6d-2a9c4f1b7d50",
+      "name": "Resolve thread",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Resolve thread: pick the forum thread for this message's kind and pass the message on with that id.\n// The kind's setting wins when it is set and not blank; otherwise HUNTER_DISCORD_THREAD_ID is used.\nconst THREAD_SETTINGS = { offer: 'HUNTER_DISCORD_THREAD_OFFERS', claim: 'HUNTER_DISCORD_THREAD_CLAIMS', failure: 'HUNTER_DISCORD_THREAD_FAILURES', summary: 'HUNTER_DISCORD_THREAD_SUMMARY', alert: 'HUNTER_DISCORD_THREAD_SUMMARY' };\nconst FALLBACK_SETTING = 'HUNTER_DISCORD_THREAD_ID';\n\n// Return the thread id for kind from env, or throw naming the kind and every setting it checked.\nfunction resolveThread(kind, env) {\n  const checked = [Object.hasOwn(THREAD_SETTINGS, kind) ? THREAD_SETTINGS[kind] : null, FALLBACK_SETTING].filter(Boolean);\n  for (const name of checked) {\n    const value = String(env[name] ?? '').trim();\n    if (value) return value;\n  }\n  throw new Error(`notify-discord: no Discord thread for kind '${kind}' (checked ${checked.join(', ')})`);\n}\n\nconst kind = $('Notify input').first().json.kind;\nconst threadId = resolveThread(kind, $env);\nreturn [{ json: { threadId, message: $input.first().json } }];"
       }
     },
     {
@@ -27,13 +38,13 @@
       "name": "Post to Discord",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [440, 0],
+      "position": [660, 0],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}",
+        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id={{ encodeURIComponent($json.threadId) }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ $json }}",
+        "jsonBody": "={{ $json.message }}",
         "options": {
           "response": {
             "response": { "fullResponse": true, "neverError": true }
@@ -46,7 +57,7 @@
       "name": "Rate limited?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [660, 0],
+      "position": [880, 0],
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
@@ -68,7 +79,7 @@
       "name": "Wait for retry_after",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [880, -120],
+      "position": [1100, -120],
       "parameters": {
         "resume": "timeInterval",
         "amount": "={{ Number($json.body?.retry_after ?? $json.headers?.['retry-after']) || 1 }}",
@@ -80,13 +91,13 @@
       "name": "Retry once",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, -120],
+      "position": [1320, -120],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}",
+        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id={{ encodeURIComponent($('Resolve thread').first().json.threadId) }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ $('Format message').first().json }}",
+        "jsonBody": "={{ $('Resolve thread').first().json.message }}",
         "options": {
           "response": {
             "response": { "fullResponse": true, "neverError": true }
@@ -99,10 +110,21 @@
       "name": "Check delivery",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, 0],
+      "position": [1540, 0],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "// Check delivery: pass the response on when Discord answered 2xx (204 is success); otherwise fail the run so the error workflow reports it.\nconst response = $input.first().json;\nif (response.statusCode < 200 || response.statusCode > 299) {\n  throw new Error(`notify-discord: Discord returned HTTP ${response.statusCode}`);\n}\n\nreturn [{ json: response }];"
+      }
+    },
+    {
+      "id": "9e4f1a27-6b8c-4d3e-a5f0-3c7d2e8b1f64",
+      "name": "Count delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Count delivery: after a successful run, count it in the notifier's static data. sent +1 on a 204; rateLimited +1 when the first post was a 429, even if the retry got through.\n// Runs only after Check delivery, so a failed run is never counted here (see the monitoring skill).\nfunction countDelivery(metrics, firstStatus, finalStatus) {\n  const counters = { sent: 0, rateLimited: 0, ...(metrics?.counters ?? {}) };\n  if (finalStatus === 204) counters.sent += 1;\n  if (firstStatus === 429) counters.rateLimited += 1;\n  return { ...(metrics ?? {}), counters };\n}\n\nconst data = $getWorkflowStaticData('global');\ndata.metrics = countDelivery(data.metrics, $('Post to Discord').first().json.statusCode, $input.first().json.statusCode);\nreturn [{ json: $input.first().json }];"
       }
     }
   ],
@@ -111,6 +133,9 @@
       "main": [[{ "node": "Format message", "type": "main", "index": 0 }]]
     },
     "Format message": {
+      "main": [[{ "node": "Resolve thread", "type": "main", "index": 0 }]]
+    },
+    "Resolve thread": {
       "main": [[{ "node": "Post to Discord", "type": "main", "index": 0 }]]
     },
     "Post to Discord": {
@@ -124,6 +149,9 @@
     },
     "Retry once": {
       "main": [[{ "node": "Check delivery", "type": "main", "index": 0 }]]
+    },
+    "Check delivery": {
+      "main": [[{ "node": "Count delivery", "type": "main", "index": 0 }]]
     }
   },
   "settings": { "executionOrder": "v1", "errorWorkflow": "errorReport01" },
