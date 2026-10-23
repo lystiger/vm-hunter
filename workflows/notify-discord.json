@@ -1,0 +1,117 @@
+{
+  "id": "notifyDiscord01",
+  "name": "Notify Discord",
+  "active": false,
+  "nodes": [
+    {
+      "id": "1f0c7a52-3b8e-4d61-9a2c-5e7f0b4d8a13",
+      "name": "Notify input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "2a9d3e61-8c4f-4b72-a1e5-6d0c9f3b7e24",
+      "name": "Format message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format message: turn one notify input {kind, title, body, url, attempts?, region?, shape?} into a Discord payload.\n// Limits: content 2000 characters, embed description 4096, at most 10 embeds. Longer text is cut with '…'.\nconst LIMIT_CONTENT = 2000;\nconst LIMIT_DESCRIPTION = 4096;\nconst LIMIT_FIELD_VALUE = 1024;\nconst LIMIT_EMBEDS = 10;\nconst COLORS = { offer: 0x3498db, claim: 0x2ecc71, failure: 0xe74c3c };\n\n// Cut text to max characters (code points). Adds '…' only when it had to cut.\nfunction clip(text, max) {\n  const chars = Array.from(String(text ?? ''));\n  return chars.length <= max ? chars.join('') : chars.slice(0, max - 1).join('') + '…';\n}\n\nconst item = $input.first().json;\nif (!Object.hasOwn(COLORS, item.kind)) {\n  throw new Error(`notify-discord: unknown kind '${item.kind}'`);\n}\nif (!item.title) {\n  throw new Error('notify-discord: title is required');\n}\n\n// Claim results carry the attempt count, region and shape as optional fields.\nconst fields = [];\nif (item.kind === 'claim') {\n  if (item.attempts !== undefined) fields.push({ name: 'Attempts', value: String(item.attempts), inline: true });\n  if (item.region) fields.push({ name: 'Region', value: clip(item.region, LIMIT_FIELD_VALUE), inline: true });\n  if (item.shape) fields.push({ name: 'Shape', value: clip(item.shape, LIMIT_FIELD_VALUE), inline: true });\n}\n\n// The URL goes in the content so Discord shows it as a clickable link.\nconst content = clip([item.title, item.url].filter(Boolean).join('\\n'), LIMIT_CONTENT);\n\nconst embed = { color: COLORS[item.kind] };\nif (item.body) embed.description = clip(item.body, LIMIT_DESCRIPTION);\nif (fields.length) embed.fields = fields;\nconst embeds = (embed.description || fields.length ? [embed] : []).slice(0, LIMIT_EMBEDS);\n\nreturn [{ json: { username: 'VM Hunter', content, embeds } }];"
+      }
+    },
+    {
+      "id": "3c8e4f72-9d5a-4c83-b2f6-7e1d0a4c8f35",
+      "name": "Post to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": { "fullResponse": true, "neverError": true }
+          }
+        }
+      }
+    },
+    {
+      "id": "4d7f5a83-0e6b-4d94-93a7-8f2e1b5d9a46",
+      "name": "Rate limited?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "7a4c8db6-3b9e-4a07-a6d0-1c5b4e8a2d79",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 429,
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "5e6a6b94-1f7c-4ea5-84b8-9a3f2c6e0b57",
+      "name": "Wait for retry_after",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [880, -120],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ Number($json.body?.retry_after) || 1 }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "6f5b7ca5-2a8d-4fb6-95c9-0b4a3d7f1c68",
+      "name": "Retry once",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Format message').first().json }}",
+        "options": {
+          "response": {
+            "response": { "fullResponse": true, "neverError": true }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Notify input": {
+      "main": [[{ "node": "Format message", "type": "main", "index": 0 }]]
+    },
+    "Format message": {
+      "main": [[{ "node": "Post to Discord", "type": "main", "index": 0 }]]
+    },
+    "Post to Discord": {
+      "main": [[{ "node": "Rate limited?", "type": "main", "index": 0 }]]
+    },
+    "Rate limited?": {
+      "main": [[{ "node": "Wait for retry_after", "type": "main", "index": 0 }], []]
+    },
+    "Wait for retry_after": {
+      "main": [[{ "node": "Retry once", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1", "errorWorkflow": "errorReport01" },
+  "pinData": {}
+}

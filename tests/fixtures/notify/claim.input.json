@@ -1,0 +1,8 @@
+{
+  "kind": "claim",
+  "title": "A1 VM created in eu-frankfurt-1",
+  "body": "Free A1 shape claimed after retries.",
+  "attempts": 7,
+  "region": "eu-frankfurt-1",
+  "shape": "VM.Standard.A1.Flex 4 OCPU / 24 GB"
+}
