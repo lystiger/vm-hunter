@@ -1,0 +1,45 @@
+{
+  "id": "goodFixture01",
+  "name": "Good fixture: launch after cost guard",
+  "active": false,
+  "nodes": [
+    {
+      "id": "6f1c2c43-0d6e-4f7e-9a51-1d8f2b9c0a11",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": { "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] } }
+    },
+    {
+      "id": "3b9e5a10-7c2d-4f58-8e61-2a0d4c7b9f32",
+      "name": "Cost guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Cost guard: pass only the free shape within the free limits.\nreturn $input.all();"
+      }
+    },
+    {
+      "id": "c0d4e8f2-1a6b-4c3d-9e5f-7a8b9c0d1e2f",
+      "name": "Launch instance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HUNTER_OCI_API_BASE }}/20160918/instances",
+        "sendBody": true,
+        "jsonBody": "={{ JSON.stringify({ compartmentId: $env.HUNTER_OCI_COMPARTMENT_OCID }) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": { "main": [[{ "node": "Cost guard", "type": "main", "index": 0 }]] },
+    "Cost guard": { "main": [[{ "node": "Launch instance", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

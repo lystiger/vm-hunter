@@ -1,0 +1,24 @@
+{
+  "id": "badDuplicateNode",
+  "name": "Bad fixture: duplicate node name",
+  "active": false,
+  "nodes": [
+    {
+      "id": "11111111-2222-4333-8444-555555555551",
+      "name": "Fetch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 0],
+      "parameters": { "url": "https://feed.test/one" }
+    },
+    {
+      "id": "11111111-2222-4333-8444-555555555552",
+      "name": "Fetch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "parameters": { "url": "https://feed.test/two" }
+    }
+  ],
+  "connections": {}
+}

@@ -1,0 +1,6 @@
+{
+  "id": "badFixture02",
+  "name": "Bad fixture: no connections key",
+  "active": false,
+  "nodes": []
+}
