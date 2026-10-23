@@ -54,12 +54,24 @@ Also alert if attempts exceed 60 in an hour: the claimer is going faster than it
 
 ### Notifier
 
-Counters: `sent`, `rateLimited`, `failed`. A failed send cannot be reported to Discord (Discord is
-what failed); it fails the run so it shows in the n8n executions list.
+Counters: `sent` and `rateLimited`, updated only by runs that succeed.
+
+n8n does not save static data from a run that fails, so a failing run cannot count its own failure.
+A failed send therefore fails the run (it shows in the n8n executions list, and the error workflow
+starts) and is counted by the error workflow, not by the notifier. A `rateLimited` increment from a
+run that then fails is lost; that is accepted, because the failure itself is counted. Do not catch the
+failure to keep the counters: a run that "succeeds" after a failed send hides the failure.
 
 ### Error workflow
 
-Counters: `failures` per workflow name. Alert when one workflow fails more than 3 times in a day.
+Counters: `failures` per workflow name (this is where failed sends of Notify Discord are counted).
+Alert when one workflow fails more than 3 times in a day. The error workflow's own runs succeed, so
+its static data is saved.
+
+## Rule for every workflow
+
+Count an outcome only in a run that ends in success. Anything that must fail the run is counted by
+the error workflow.
 
 ## Summary line format
 
