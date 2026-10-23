@@ -1,0 +1,6 @@
+{
+  "kind": "failure",
+  "title": "Claim workflow failed",
+  "body": "Node 'Launch instance' returned HTTP 500.",
+  "url": "https://n8n.example.test/execution/42"
+}
