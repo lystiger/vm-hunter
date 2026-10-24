@@ -8,6 +8,9 @@ description: Claim an Oracle Cloud Always Free Ampere A1 VM - signed OCI API req
 ## What is free (the cost guard enforces this)
 
 - Shape `VM.Standard.A1.Flex` only.
+- A tenancy's own A1 limit can be lower than the free limits (seen: 2 OCPU, 12 GB on a 2026 Free Tier
+  account), and Oracle then answers HTTP 400 `LimitExceeded`. The requested size comes from
+  `HUNTER_OCI_A1_OCPUS` and `HUNTER_OCI_A1_MEMORY_GB` (default 4 and 24).
 - Across the whole tenancy, all A1 instances together: **at most 4 OCPUs and 24 GB memory**.
 - Block storage: **at most 200 GB in total** across boot and block volumes. A boot volume is at least
   47 GB on most images; size it explicitly with `bootVolumeSizeInGBs`.
