@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>LowEndBox (fixture)</title>
+    <link>https://lowendbox.example.test/</link>
+    <description>Offline sample of the LowEndBox feed for tests</description>
+    <lastBuildDate>Fri, 23 Oct 2026 08:00:00 +0000</lastBuildDate>
+
+    <item>
+      <title>Free VPS with 1GB RAM, always free tier</title>
+      <link>https://lowendbox.example.test/deals/free-vps-1gb</link>
+      <guid>https://lowendbox.example.test/?p=1001</guid>
+      <pubDate>Fri, 23 Oct 2026 07:00:00 +0000</pubDate>
+      <description>A free tier VM with 1GB RAM and 20GB disk. Always free for the first year.</description>
+    </item>
+
+    <item>
+      <title>$0 setup KVM plan in Frankfurt</title>
+      <link>https://lowendbox.example.test/deals/kvm-frankfurt</link>
+      <guid>https://lowendbox.example.test/?p=1002</guid>
+      <pubDate>Thu, 22 Oct 2026 12:00:00 +0000</pubDate>
+      <description>$0 setup fee, then $3.50 per month for 1 vCPU and 512MB RAM.</description>
+    </item>
+
+    <item>
+      <title>Budget NVMe VPS, $4.99/year</title>
+      <link>https://lowendbox.example.test/deals/nvme-budget</link>
+      <guid>https://lowendbox.example.test/?p=1003</guid>
+      <pubDate>Thu, 22 Oct 2026 09:00:00 +0000</pubDate>
+      <description>Paid yearly plan with 1 vCPU, 1GB RAM and 25GB NVMe storage.</description>
+    </item>
+
+    <item>
+      <title>Free tier storage bucket with 10GB</title>
+      <link>https://lowendbox.example.test/deals/free-tier-storage</link>
+      <guid>https://lowendbox.example.test/?p=1004</guid>
+      <pubDate>Wed, 21 Oct 2026 15:00:00 +0000</pubDate>
+      <description>Object storage with a free tier of 10GB, no card required.</description>
+    </item>
+
+    <item>
+      <title>Black Friday sale: 40% off all Xen plans</title>
+      <link>https://lowendbox.example.test/deals/black-friday-xen</link>
+      <guid>https://lowendbox.example.test/?p=1005</guid>
+      <pubDate>Wed, 21 Oct 2026 10:00:00 +0000</pubDate>
+      <description>Discount on paid Xen plans starting at $6 per month. Coupon expires Sunday.</description>
+    </item>
+
+    <item>
+      <title>Free dedicated IPv4 add-on for existing customers</title>
+      <link>https://lowendbox.example.test/deals/free-ipv4</link>
+      <guid>https://lowendbox.example.test/?p=1006</guid>
+      <pubDate>Tue, 20 Oct 2026 18:00:00 +0000</pubDate>
+      <description>Free for existing customers only. Paid plan from $2 per month for extra address space.</description>
+    </item>
+
+    <item>
+      <title>Cheap OpenVZ plan, $1.25/month</title>
+      <link>https://lowendbox.example.test/deals/openvz-cheap</link>
+      <guid>https://lowendbox.example.test/?p=1007</guid>
+      <pubDate>Mon, 19 Oct 2026 11:00:00 +0000</pubDate>
+      <description>Monthly billing, 256MB RAM, 5GB disk. No free tier.</description>
+    </item>
+
+    <item>
+      <title>Free trial: 30 days on our Ryzen VPS</title>
+      <link>https://lowendbox.example.test/deals/ryzen-trial</link>
+      <guid>https://lowendbox.example.test/?p=1008</guid>
+      <pubDate>Mon, 19 Oct 2026 08:00:00 +0000</pubDate>
+      <description>Free trial period of 30 days, then paid plans from $9 per month.</description>
+    </item>
+  </channel>
+</rss>

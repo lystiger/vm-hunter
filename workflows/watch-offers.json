@@ -1,0 +1,470 @@
+{
+  "id": "watchOffers",
+  "name": "Watch offers",
+  "active": false,
+  "nodes": [
+    {
+      "id": "0a6c1e72-4b3d-4f85-9e21-6d7a8c0b5f01",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0b7d2f83-5c4e-4a96-8f32-7e8b9d1c6a02",
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "1c8e3a94-6d5f-4b07-9a43-8f9c0e2d7b13",
+      "name": "Fetch free-for-dev",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.HUNTER_FREE_FOR_DEV_URL }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "2d9f4b05-7e6a-4c18-8b54-9a0d1f3e8c24",
+      "name": "Throttled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3e0a5c16-8f7b-4d29-9c65-0b1e2a4f9d35",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 429,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "5b1f7d26-2c3e-4a8d-9f10-3d6e8a7c4b21",
+      "name": "Retry delay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Retry delay: seconds to wait for a 429, from its Retry-After header (seconds or an HTTP date).\n// At least 60 seconds; no upper cap, because the provider asked for that wait.\nconst value = String($input.first().json.headers?.['retry-after'] ?? '').trim();\nconst seconds = /^\\d+$/.test(value) ? Number(value) : Math.ceil((Date.parse(value) - Date.now()) / 1000);\nreturn [{ json: { seconds: Number.isFinite(seconds) ? Math.max(60, seconds) : 60 } }];\n"
+      }
+    },
+    {
+      "id": "3f1b6c27-9a8c-4e3a-8d76-1c2f3b5a0e46",
+      "name": "Wait for Retry-After",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -120
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.seconds }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "4a2c7d38-0b9d-4f4b-9e87-2d3a4c6b1f57",
+      "name": "Retry free-for-dev",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -120
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.HUNTER_FREE_FOR_DEV_URL }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "5b3d8e49-1c0e-4a5c-8f98-3e4b5d7c2a68",
+      "name": "Fetch LowEndBox",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "url": "={{ $env.HUNTER_LOWENDBOX_FEED_URL }}"
+      }
+    },
+    {
+      "id": "6c4e9f5a-2d1f-4b6d-9a09-4f5c6e8d3b79",
+      "name": "Parse and filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse and filter: read the free-for-dev README and the LowEndBox items, keep offers not seen before, update the watcher's counters and emit Discord items (kind offer or alert).\n// Seen links live in static data (seen: link -> first-seen ISO time). On the first run everything parsed is recorded and nothing is emitted.\n// The real free-for-dev headings of the server and hosting sections (checked 2026-10-24).\nconst WANTED_HEADINGS = ['Major Cloud Providers', 'IaaS', 'PaaS', 'Web Hosting'];\nconst FREE_PATTERN = /\\bfree\\b|\\$0(?![\\d.])|always free|free tier/i;\nconst NEGATED_PATTERN = /\\b(?:no|not|without)\\s+(?:\\w+\\s+)?free\\b/gi; // 'No free tier' is a paid post\nconst SEEN_DAYS = 180;\nconst LIST_LIMIT = 10;\nconst DAY_MS = 86400000;\nconst STALE_MS = 12 * 3600000; // two schedule intervals (6 hours each)\nconst SEEN_LIMIT = 5000;\n\n// Local calendar day (YYYY-MM-DD) in the given time zone.\nfunction localDay(now, timeZone) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);\n}\n\n// Bullet lines under the wanted '##' headings. Returns the offers and how many wanted headings were found.\nfunction parseReadme(markdown) {\n  const offers = [];\n  let heading = '';\n  let sections = 0;\n  for (const line of String(markdown ?? '').split('\\n')) {\n    const title = line.match(/^##\\s+(.+?)\\s*$/);\n    if (title) {\n      heading = title[1];\n      if (WANTED_HEADINGS.includes(heading)) sections += 1;\n      continue;\n    }\n    const bullet = line.match(/^\\s*[*-]\\s+\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)\\s*(?:[—–-]\\s*)?(.*)$/);\n    if (bullet && WANTED_HEADINGS.includes(heading)) {\n      offers.push({ name: bullet[1], url: bullet[2], source: 'free-for-dev', summary: bullet[3] });\n    }\n  }\n  return { offers, sections };\n}\n\n// The retry's response when the retry ran, otherwise the first response. A node that did not run throws; that means undefined.\nfunction fromNode(name) {\n  try {\n    return $(name).first().json;\n  } catch {\n    return undefined;\n  }\n}\n\nconst readme = fromNode('Retry free-for-dev') ?? fromNode('Fetch free-for-dev') ?? {};\nconst readmeOk = readme.statusCode >= 200 && readme.statusCode < 300;\nconst readmeParsed = readmeOk ? parseReadme(readme.body) : { offers: [], sections: 0 };\n\n// LowEndBox items come from Fetch LowEndBox; a failed feed arrives as one item with an error field.\nconst feedItems = $input.all().map((item) => item.json);\nconst feedError = feedItems.some((item) => item.error);\nconst posts = feedItems.filter((item) => item.link && !item.error);\nconst freePosts = posts.filter((post) =>\n  [post.title, post.contentSnippet ?? post.content ?? post.description].some((text) => FREE_PATTERN.test(String(text ?? '').replace(NEGATED_PATTERN, ' '))));\nconst lowendboxOffers = freePosts.map((post) => ({ name: post.title, url: post.link, source: 'LowEndBox', summary: '' }));\nconst offers = [...readmeParsed.offers, ...lowendboxOffers];\n\nconst now = new Date();\nconst stamp = now.toISOString();\nconst data = $getWorkflowStaticData('global');\nconst today = localDay(now, $env.GENERIC_TIMEZONE || 'UTC');\nconst old = data.metrics ?? {};\n// A new local day starts with no alerts sent yet. The 09:00 summary resets the counters, not this; last successes carry over.\nconst day = old.day === today ? old : { ...old, day: today, alerted: {} };\nconst counters = { ...day.counters };\nconst count = (name, n = 1) => {\n  counters[name] = (counters[name] ?? 0) + n;\n};\nconst lastSuccessAt = { ...day.lastSuccessAt };\nconst alerted = { ...day.alerted };\nconst alerts = [];\n// Each alert key is sent at most once per local day.\nfunction alertOnce(key, title, body) {\n  if (alerted[key]) return;\n  alerted[key] = true;\n  alerts.push({ kind: 'alert', title, body, url: '' });\n}\n\n// Seen links: the first run records everything and emits nothing. Entries older than SEEN_DAYS are dropped.\nconst firstRun = data.seen === undefined;\nconst cutoff = now.getTime() - SEEN_DAYS * DAY_MS;\nconst seen = Object.fromEntries(Object.entries(data.seen ?? {}).filter(([, first]) => Date.parse(first) >= cutoff));\nconst fresh = [];\nlet skipped = 0;\nfor (const offer of offers) {\n  if (seen[offer.url]) {\n    skipped += 1;\n    continue;\n  }\n  seen[offer.url] = stamp;\n  if (!firstRun) fresh.push(offer);\n}\n\ncount('runs');\ncount('new_offers', fresh.length);\ncount('skipped_seen', skipped);\ncount('filtered_out', posts.length - freePosts.length);\ncounters.fetched = { 'free-for-dev': readmeParsed.offers.length, lowendbox: posts.length };\nif (!readmeOk) count('errors');\nif (feedError) count('errors');\nif (readmeOk) lastSuccessAt['free-for-dev'] = stamp;\nif (posts.length && !feedError) lastSuccessAt.lowendbox = stamp;\n\nif (!readmeOk) {\n  alertOnce('fetch:free-for-dev', 'Feed failed: free-for-dev', `HTTP ${readme.statusCode ?? 'no response'} from the free-for-dev README. Next try in 6 hours.`);\n} else if (readmeParsed.offers.length === 0) {\n  alertOnce('parse:free-for-dev', 'No offers parsed: free-for-dev', `Found ${readmeParsed.sections} of ${WANTED_HEADINGS.length} wanted sections. The README format may have changed.`);\n}\nif (feedError || posts.length === 0) {\n  alertOnce('fetch:lowendbox', 'Feed failed or empty: LowEndBox', 'The LowEndBox feed returned an error or no posts.');\n}\n\n// A source with no successful read for two schedule intervals is stale.\nfor (const source of ['free-for-dev', 'lowendbox']) {\n  const last = lastSuccessAt[source];\n  if (!last || now.getTime() - Date.parse(last) > STALE_MS) {\n    alertOnce(`stale:${source}`, `Stale source: ${source}`, `${last ? `No successful read since ${last}.` : 'No successful read on record.'} Two schedule intervals (12 hours) have passed.`);\n  }\n}\nif (Object.keys(seen).length > SEEN_LIMIT) {\n  alertOnce('seen:size', 'Seen list is large', `${Object.keys(seen).length} entries (limit ${SEEN_LIMIT}). Check the 180-day cutoff.`);\n}\ndata.metrics = { day: today, counters, lastSuccessAt, alerted };\nif (!firstRun || offers.length > 0) data.seen = seen;\n\nconst messages = [];\nif (fresh.length) {\n  const shown = fresh.slice(0, LIST_LIMIT);\n  const lines = shown.map((offer) => `• ${offer.name} (${offer.source}): ${offer.url}`);\n  if (fresh.length > shown.length) lines.push(`and ${fresh.length - shown.length} more`);\n  messages.push({ kind: 'offer', title: `${fresh.length} new free offer${fresh.length === 1 ? '' : 's'}`, body: lines.join('\\n'), url: '' });\n}\nreturn [...messages, ...alerts].map((json) => ({ json }));\n"
+      }
+    },
+    {
+      "id": "7d5f0a6b-3e2a-4c7e-8b1a-5a6d7f9e4c80",
+      "name": "Offer batch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8e6a1b7c-4f3b-4d8f-9c2b-6b7e8a0f5d91",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "offer",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8f7b2c8d-5a4c-4e9a-8d3c-7c8f9b1a6e02",
+      "name": "Notify offers",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      }
+    },
+    {
+      "id": "9a8c3d9e-6b5d-4f0b-9e4d-8d9a0c2b7f13",
+      "name": "Notify alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      }
+    },
+    {
+      "id": "ab9d4e0f-7c6e-4a1c-8f5e-9e0b1d3c8a24",
+      "name": "Shape summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shape summary: build the 09:00 summary line from the counters, then reset the counters for the new local day.\nconst today = new Intl.DateTimeFormat('en-CA', { timeZone: $env.GENERIC_TIMEZONE || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());\nconst data = $getWorkflowStaticData('global');\nconst metrics = data.metrics ?? {};\nconst counters = metrics.counters ?? {};\nconst lastSuccessAt = metrics.lastSuccessAt ?? {};\nconst line = `Watch offers · ${counters.runs ?? 0} runs · ${counters.new_offers ?? 0} new · ${counters.skipped_seen ?? 0} already seen · ${counters.filtered_out ?? 0} filtered out · ${counters.errors ?? 0} fetch errors`;\nconst sources = ['free-for-dev', 'lowendbox'].map((name) => `${name}: ${lastSuccessAt[name] ? `last ok ${lastSuccessAt[name]}` : 'no successful read yet'}`);\ndata.metrics = { day: today, counters: {}, lastSuccessAt, alerted: metrics.alerted ?? {} };\nreturn [{ json: { kind: 'summary', title: `Watch offers summary (${metrics.day ?? today})`, body: [line, ...sources].join('\\n'), url: '' } }];\n"
+      }
+    },
+    {
+      "id": "bc0e5f1a-8d7f-4b2d-8a6f-0f1c2e4d9b35",
+      "name": "Notify summary",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        400
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch free-for-dev",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch free-for-dev": {
+      "main": [
+        [
+          {
+            "node": "Throttled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Throttled?": {
+      "main": [
+        [
+          {
+            "node": "Retry delay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch LowEndBox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Retry-After": {
+      "main": [
+        [
+          {
+            "node": "Retry free-for-dev",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry free-for-dev": {
+      "main": [
+        [
+          {
+            "node": "Fetch LowEndBox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch LowEndBox": {
+      "main": [
+        [
+          {
+            "node": "Parse and filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and filter": {
+      "main": [
+        [
+          {
+            "node": "Offer batch?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offer batch?": {
+      "main": [
+        [
+          {
+            "node": "Notify offers",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Shape summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape summary": {
+      "main": [
+        [
+          {
+            "node": "Notify summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry delay": {
+      "main": [
+        [
+          {
+            "node": "Wait for Retry-After",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "errorReport01"
+  },
+  "pinData": {}
+}
