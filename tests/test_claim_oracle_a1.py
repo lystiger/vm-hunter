@@ -241,7 +241,6 @@ def test_guard_allows_an_empty_tenancy(run):
 
 
 def test_guard_refuses_ocpus_over_the_limit(run):
-    res = run(node_code("Cost guard"), routes=guard_routes(instances=fixture("list-instances.json")))
     routes = guard_routes(instances=fixture("list-instances.json"), boot=fixture("list-boot-volumes.json"), block=fixture("list-block-volumes.json"))
     item = first_json(run(node_code("Cost guard"), routes=routes))
     assert item["kind"] == "failure" and item["title"] == "Cost guard refused the A1 launch"
@@ -458,6 +457,12 @@ def test_due_only_once_the_wait_has_passed(run):
     static = {"nextAttemptAt": NOW + 60_000}
     assert run(node_code("Due for attempt?"), static=static, now=NOW + 59_999)["result"] == []
     assert run(node_code("Due for attempt?"), static=static, now=NOW + 60_000)["result"] == [{"json": {"due": True}}]
+
+
+def test_an_attempt_holds_the_claimer_while_it_runs(run):
+    res = run(node_code("Due for attempt?"), static={}, now=NOW)
+    assert res["staticData"]["nextAttemptAt"] - NOW == 15 * 60_000
+    assert run(node_code("Due for attempt?"), static=res["staticData"], now=NOW + 60_000)["result"] == []
 
 
 def test_a_claim_stops_the_claimer(run):
