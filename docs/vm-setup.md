@@ -203,7 +203,7 @@ n8n does not read `.env.example`. Every variable a workflow needs must be in `~/
    HUNTER_DISCORD_THREAD_ID=<thread-id>
    ```
 
-   `HUNTER_DISCORD_THREAD_ID` is the id of the thread (the room) that every message goes to. The per-kind thread variables are optional overrides.
+   `HUNTER_DISCORD_THREAD_ID` is the id of the thread (the room) that every message goes to. The per-kind thread variables are optional overrides: `HUNTER_DISCORD_THREAD_OFFERS`, `HUNTER_DISCORD_THREAD_CLAIMS`, `HUNTER_DISCORD_THREAD_FAILURES` and `HUNTER_DISCORD_THREAD_SUMMARY`.
 
 > **Warning:** the webhook URL is a secret. Anyone who has it can post to your channel. If it is ever pasted anywhere (a chat, a screenshot, a repository), delete the webhook in Discord and create a new one.
 
