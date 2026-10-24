@@ -510,3 +510,12 @@ def test_shape_summary_reports_and_resets_the_counters(run):
     assert metrics["counters"] == {}
     assert metrics["alerted"] == {"capReached": "2026-10-23"}
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", metrics["day"])
+
+
+def test_code_nodes_do_not_use_the_url_global():
+    # The n8n Code node sandbox (1.123.87) has no URL global; `new URL(...)` fails there with
+    # "URL is not defined" although it works under plain node in these tests.
+    for path in sorted((ROOT / "workflows").glob("*.json")):
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+        for node in workflow["nodes"]:
+            assert "new URL(" not in node.get("parameters", {}).get("jsCode", ""), (path.name, node["name"])
