@@ -31,7 +31,10 @@ description: Send VM Hunter messages to Discord through a webhook, and report an
 ## One notify workflow
 
 All other workflows call `notify-discord.json` with an Execute Workflow node instead of posting
-themselves. Its input item:
+themselves. The notifier sends **one message per call** (its first input item), and Execute Workflow
+passes the incoming items through, so set the node's `mode` to `each` and shape every item as below.
+
+Its input item:
 
 ```json
 { "kind": "offer | claim | failure | summary | alert", "title": "short line", "body": "details", "url": "optional link" }
