@@ -118,7 +118,7 @@ n8n lives in `~/n8n`, outside the repository, so no secret can end up in git.
 
    The line looks like `image: n8nio/n8n:<tag>@sha256:<digest>`. Copy the tag and the digest exactly.
 
-3. Write `~/n8n/compose.yaml`. Use the same image line you copied in step 2, and use your own path to the clone's `workflows` folder. For a root VM the path is `/root/vm-hunter/workflows`; for another user it is `/home/<vm-user>/vm-hunter/workflows`:
+3. Write `~/n8n/compose.yaml`. Use the same image line you copied in step 2, and replace `<clone-path>/workflows` with the full path to the clone's `workflows` folder: `/root/vm-hunter/workflows` for a root VM, or `/home/<vm-user>/vm-hunter/workflows` for another user:
 
    ```yaml
    services:
@@ -129,7 +129,7 @@ n8n lives in `~/n8n`, outside the repository, so no secret can end up in git.
          - "127.0.0.1:5678:5678"
        volumes:
          - n8n_data:/home/node/.n8n
-         - /root/vm-hunter/workflows:/workflows:ro
+         - <clone-path>/workflows:/workflows:ro
        restart: unless-stopped
 
    volumes:
@@ -246,7 +246,7 @@ n8n does not read `.env.example`. Every variable a workflow needs must be in `~/
 
 This test checks that the notify workflow reaches your thread.
 
-1. In the editor, create a new workflow. Paste the JSON only onto the empty canvas, never into a Code node.
+1. In the editor, create a new workflow.
 
 2. Build it with these three nodes:
    - **Manual Trigger**.
@@ -298,7 +298,9 @@ When you are done, delete this test workflow.
 
 ## 10. Set up the Oracle Cloud account and API key
 
-Stay on the **Free Tier**. Never upgrade to Pay As You Go. The cost guard matters most on upgraded accounts, where a request could be charged.
+Stay on the **Free Tier**.
+
+> **Warning:** never upgrade to Pay As You Go. On an upgraded account a request can be charged, and the cost guard cannot stop that.
 
 1. Log in at `https://cloud.oracle.com` with your **Cloud Account Name**.
 
@@ -438,8 +440,8 @@ Your tenancy may allow less than the Free Tier maximum. The owner's Free Tier te
 What to expect:
 
 - **Watch offers** first runs about 6 hours after activation. Its first run posts nothing.
-- **Claim Oracle A1** attempts about every 2 minutes. Each attempt waits at least 60 seconds plus a random delay.
-- Each workflow posts a **summary at 09:00 local time**. A missing summary means n8n or the VM is down.
+- **Claim Oracle A1** tries again at least 60 seconds after each attempt, plus a random delay of up to 30 seconds.
+- **Watch offers** and **Claim Oracle A1** each post a **summary at 09:00 local time**. A missing summary means n8n or the VM is down.
 
 To confirm that **Claim Oracle A1** works:
 
