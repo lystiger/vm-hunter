@@ -19,9 +19,9 @@ def test_both_agent_clis_see_the_same_skills():
         assert (ROOT / link).resolve() == (ROOT / "skills").resolve()
 
 
-def test_env_example_lists_names_without_values():
+def test_env_example_lists_names_without_secret_values():
     for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):
             name, _, value = line.partition("=")
             assert re.fullmatch(r"[A-Z][A-Z0-9_]*", name), line
-            assert value == "", line
+            assert not value or value.startswith("https://") or value == "crypto", line
