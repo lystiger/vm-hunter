@@ -59,8 +59,8 @@ algorithm="rsa-sha256",headers="...",signature="<base64>"`).
   is deterministic, so test the signer against an independent implementation: build the signing string
   with the Code node, then check its signature equals `openssl dgst -sha256 -sign <key>` over the same
   string, base64-encoded. Use a throwaway key generated for the test (`openssl genrsa`), never a real one.
-  Also check `x-content-sha256` equals `openssl dgst -sha256 -binary | base64` of the body. If signing inside n8n proves impossible on the pinned version, stop and report it;
-  do not work around the cost guard or the key handling.
+  Also check `x-content-sha256` equals `openssl dgst -sha256 -binary | base64` of the body.
+- Never work around the cost guard or the key handling.
 
 ## Responses
 
