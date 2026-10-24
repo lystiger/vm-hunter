@@ -43,13 +43,9 @@ n8n runs on the VM and is never published on a public port. You reach its editor
 
 2. Keep this terminal open. The tunnel works only while it is open.
 
-3. On your laptop, open a browser at:
+3. Later, once n8n runs (step 7), the editor is at `http://localhost:5678` in your laptop's browser.
 
-   ```
-   http://localhost:5678
-   ```
-
-   **Pass:** the n8n editor page loads on your laptop. (It will ask you to create an owner account later, in step 7.)
+   **Pass:** the terminal shows the VM's shell prompt.
 
 ---
 
@@ -234,9 +230,15 @@ n8n does not read `.env.example`. Every variable a workflow needs must be in `~/
 
    > **Warning:** after you change `hunter.env`, always use `docker compose up -d --force-recreate`. `docker compose restart` does not reload `env_file`, so your changes are ignored.
 
-4. Open the editor at `http://localhost:5678` on your laptop (through the tunnel). Create the owner account when it asks.
+4. Make sure Docker starts when the VM boots, so n8n comes back after a reboot (the container has `restart: unless-stopped`):
 
-5. Check that the workflows are listed: **Claim Oracle A1**, **Watch offers**, **Notify Discord** and **Error report**.
+   ```bash
+   systemctl is-enabled docker || systemctl enable docker
+   ```
+
+5. Open the editor at `http://localhost:5678` on your laptop (through the tunnel). Create the owner account when it asks.
+
+6. Check that the workflows are listed: **Claim Oracle A1**, **Watch offers**, **Notify Discord** and **Error report**.
 
    **Pass:** all four workflows appear in the list.
 
@@ -327,8 +329,10 @@ Stay on the **Free Tier**.
 5. Get the fingerprint on the VM:
 
    ```bash
-   openssl rsa -pubout -outform DER -in ~/oci-api-key.pem | openssl md5 -c
+   openssl rsa -pubout -outform DER -in ~/oci-api-key.pem 2>/dev/null | openssl md5 -c | awk '{print $NF}'
    ```
+
+   It prints only the fingerprint, like `12:ab:34:...`.
 
    **Pass:** the console shows the same fingerprint for the new key. Copy the fingerprint into `hunter.env` as `HUNTER_OCI_KEY_FINGERPRINT`.
 
@@ -403,8 +407,8 @@ Your tenancy may allow less than the Free Tier maximum. The owner's Free Tier te
 1. In Cloud Shell, check the limits:
 
    ```bash
-   oci limits resource-availability get --compartment-id $T --service-name compute --limit-name standard-a1-core-count
-   oci limits resource-availability get --compartment-id $T --service-name compute --limit-name standard-a1-memory-count
+   oci limits resource-availability get --compartment-id $T --service-name compute --limit-name standard-a1-core-regional-count
+   oci limits resource-availability get --compartment-id $T --service-name compute --limit-name standard-a1-memory-regional-count
    ```
 
 2. Set both sizes in `~/n8n/hunter.env` to the limit you see. For the owner's tenancy:
@@ -492,4 +496,4 @@ When the repository changes, run these commands on the VM.
 | A workflow is inactive after an import | Imports can leave workflows inactive. | Open the workflow and set it to **Active** again. |
 | Outcome `capacity` in Read response | Oracle has no free A1 capacity right now. | This is normal. The claimer is working and will try again. |
 | No Watch offers post after the first run | The first run posts nothing by design. | Wait for the second run. |
-| No summary at 09:00 local time | n8n or the VM is down. | Check that the VM is on and `docker compose ps` in `~/n8n` shows the container running. |
+| No summary at 09:00 local time | n8n or the VM is down. | Check that the VM is on and `docker compose ps` in `~/n8n` shows the container running. After a reboot, check `systemctl is-enabled docker`. |
