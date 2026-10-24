@@ -237,6 +237,14 @@ def test_counters_count_the_run_and_add_up_within_the_day(tmp_path):
 
 
 @needs_node
+def test_a_new_day_keeps_the_counters_for_the_summary_and_resets_the_alerts(tmp_path):
+    metrics = {"day": "2026-10-23", "counters": {"runs": 3}, "lastSuccessAt": {}, "alerted": {"fetch:lowendbox": True}}
+    _, static = run_watch(tmp_path, PAID_FEED, fetched(), {"seen": {}, "metrics": metrics})
+    assert static["metrics"]["counters"]["runs"] == 4
+    assert static["metrics"]["alerted"] == {}
+
+
+@needs_node
 def test_failed_readme_counts_an_error_and_alerts_once_a_day(tmp_path):
     failed = {"statusCode": 503, "body": "", "headers": {}}
     items, static = run_watch(tmp_path, PAID_FEED, failed, {"seen": {}})
