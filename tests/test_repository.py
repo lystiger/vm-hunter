@@ -25,3 +25,10 @@ def test_env_example_lists_names_without_secret_values():
             name, _, value = line.partition("=")
             assert re.fullmatch(r"[A-Z][A-Z0-9_]*", name), line
             assert not value or value.startswith("https://") or value == "crypto", line
+
+
+def test_every_env_name_is_documented_in_vm_setup():
+    names = re.findall(r"^([A-Z][A-Z0-9_]*)=", (ROOT / ".env.example").read_text(encoding="utf-8"), re.M)
+    guide = (ROOT / "docs" / "vm-setup.md").read_text(encoding="utf-8")
+    missing = [name for name in names if name not in guide]
+    assert not missing, f"missing from docs/vm-setup.md: {', '.join(missing)}"
