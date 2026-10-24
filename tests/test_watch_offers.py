@@ -17,6 +17,7 @@ WORKFLOW = ROOT / "workflows" / "watch-offers.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "offers"
 NODE = shutil.which("node")
 PARSE = "Parse and filter"
+RETRY = "Retry delay"
 
 NOW = "2026-10-24T12:00:00Z"  # the clock the node sees; noon UTC, so the day is 2026-10-24 in every zone checked here
 STAMP = "2026-10-24T12:00:00.000Z"  # the same instant as the node writes it (toISOString)
@@ -47,6 +48,7 @@ const code = fs.readFileSync(process.argv[2], 'utf8');
 const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 const FixedDate = class extends Date {
   constructor(...args) { super(...(args.length ? args : [ctx.now])); }
+  static now() { return Date.parse(ctx.now); }
 };
 const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
 const staticData = ctx.staticData ?? {};
@@ -57,9 +59,9 @@ process.stdout.write(JSON.stringify({ items: out.map((item) => item.json), stati
 """
 
 
-def parse_code():
+def node_code(name):
     workflow = json.loads(WORKFLOW.read_text(encoding="utf-8"))
-    return next(node for node in workflow["nodes"] if node["name"] == PARSE)["parameters"]["jsCode"]
+    return next(node for node in workflow["nodes"] if node["name"] == name)["parameters"]["jsCode"]
 
 
 def fixture_text(name):
@@ -82,10 +84,10 @@ def offer_line(name, url, source="free-for-dev"):
     return f"• {name} ({source}): {url}"
 
 
-def run_watch(tmp_path, items, readme, static_data, now=NOW):
-    """Run Parse and filter once. Returns (items it emitted, static data it left)."""
-    code_path = tmp_path / "parse.js"
-    code_path.write_text(parse_code(), encoding="utf-8")
+def run_watch(tmp_path, items, readme, static_data, now=NOW, node=PARSE):
+    """Run one Code node of the workflow once. Returns (items it emitted, static data it left)."""
+    code_path = tmp_path / "node.js"
+    code_path.write_text(node_code(node), encoding="utf-8")
     runner_path = tmp_path / "runner.js"
     runner_path.write_text(RUNNER, encoding="utf-8")
     context = {"items": items, "nodes": {"Fetch free-for-dev": readme}, "staticData": static_data, "now": now}
@@ -176,7 +178,6 @@ def test_paid_posts_are_counted_as_filtered_out(tmp_path):
 
 
 @needs_node
-@pytest.mark.xfail(strict=True, reason="FREE_PATTERN matches 'free tier' in 'No free tier': there is no negation check")
 def test_paid_post_that_says_no_free_tier_is_dropped(tmp_path):
     openvz = [item for item in lowendbox_items() if item["link"].endswith("openvz-cheap")]
     _, static = run_watch(tmp_path, openvz, fetched(), {})
@@ -247,9 +248,56 @@ def test_a_new_day_keeps_the_counters_for_the_summary_and_resets_the_alerts(tmp_
 @needs_node
 def test_failed_readme_counts_an_error_and_alerts_once_a_day(tmp_path):
     failed = {"statusCode": 503, "body": "", "headers": {}}
-    items, static = run_watch(tmp_path, PAID_FEED, failed, {"seen": {}})
+    recent = {"seen": {}, "metrics": {"day": DAY, "counters": {}, "alerted": {},
+                                      "lastSuccessAt": {"free-for-dev": STAMP, "lowendbox": STAMP}}}
+    items, static = run_watch(tmp_path, PAID_FEED, failed, recent)
     assert items == [{"kind": "alert", "title": "Feed failed: free-for-dev", "url": "",
                       "body": "HTTP 503 from the free-for-dev README. Next try in 6 hours."}]
     assert static["metrics"]["counters"]["errors"] == 1
     again, _ = run_watch(tmp_path, PAID_FEED, failed, static)
     assert again == []
+
+
+@needs_node
+def test_a_failed_source_with_no_success_for_12_hours_is_reported_as_stale(tmp_path):
+    static = {"seen": {}, "metrics": {"day": DAY, "counters": {}, "alerted": {},
+                                      "lastSuccessAt": {"free-for-dev": "2026-10-23T23:59:00.000Z", "lowendbox": STAMP}}}
+    items, _ = run_watch(tmp_path, PAID_FEED, {"statusCode": 503, "body": "", "headers": {}}, static)
+    assert [item["title"] for item in items] == ["Feed failed: free-for-dev", "Stale source: free-for-dev"]
+
+
+@needs_node
+def test_a_source_read_within_12_hours_is_not_stale(tmp_path):
+    static = {"seen": {}, "metrics": {"day": DAY, "counters": {}, "alerted": {},
+                                      "lastSuccessAt": {"free-for-dev": "2026-10-24T00:01:00.000Z", "lowendbox": STAMP}}}
+    items, _ = run_watch(tmp_path, PAID_FEED, {"statusCode": 503, "body": "", "headers": {}}, static)
+    assert [item["title"] for item in items] == ["Feed failed: free-for-dev"]
+
+
+@needs_node
+def test_a_seen_list_over_5000_entries_raises_one_alert_a_day(tmp_path):
+    seen = {f"https://old{n}.example.test": STAMP for n in range(5000)}
+    items, static = run_watch(tmp_path, PAID_FEED, fetched(), {"seen": seen})
+    alerts = [item for item in items if item["kind"] == "alert"]
+    assert [item["title"] for item in alerts] == ["Seen list is large"]
+    assert static["metrics"]["alerted"]["seen:size"] is True
+
+
+@needs_node
+def test_retry_after_seconds_are_waited_in_full(tmp_path):
+    items, _ = run_watch(tmp_path, [{"headers": {"retry-after": "1200"}}], {}, {}, node=RETRY)
+    assert items == [{"seconds": 1200}]
+
+
+@needs_node
+def test_retry_after_is_never_shorter_than_60_seconds(tmp_path):
+    for header in ["0", "30", None]:
+        headers = {} if header is None else {"retry-after": header}
+        items, _ = run_watch(tmp_path, [{"headers": headers}], {}, {}, node=RETRY)
+        assert items == [{"seconds": 60}], header
+
+
+@needs_node
+def test_retry_after_http_date_is_the_seconds_until_that_time(tmp_path):
+    items, _ = run_watch(tmp_path, [{"headers": {"retry-after": "Sat, 24 Oct 2026 12:20:00 GMT"}}], {}, {}, node=RETRY)
+    assert items == [{"seconds": 1200}]
