@@ -472,8 +472,35 @@ def test_a_claim_stops_the_claimer(run):
 
 
 def test_a_configuration_error_stops_the_claimer(run):
-    static = respond(run, {}, "launch-401-not-authenticated.json")["staticData"]
+    static = run(node_code("Due for attempt?"), static={})["staticData"]
+    static = respond(run, static, "launch-401-not-authenticated.json")["staticData"]
     assert run(node_code("Due for attempt?"), static=static, now=NOW + 24 * 60 * 60_000)["result"] == []
+
+
+def test_changed_settings_start_a_stopped_claimer_again(run):
+    static = run(node_code("Due for attempt?"), static={})["staticData"]
+    static = respond(run, static, "launch-401-not-authenticated.json")["staticData"]
+    later = NOW + 24 * 60 * 60_000
+    res = run(node_code("Due for attempt?"), static=static, now=later, env={"HUNTER_OCI_A1_OCPUS": "2"})
+    assert res["result"] == [{"json": {"due": True}}]
+    assert "stopped" not in res["staticData"]
+
+
+def test_a_stop_from_before_settings_were_tracked_is_lifted_once(run):
+    res = run(node_code("Due for attempt?"), static={"stopped": True})
+    assert res["result"] == [{"json": {"due": True}}]
+
+
+def test_a_claim_is_never_lifted_by_changed_settings(run):
+    static = respond(run, {"config": "old"}, "launch-200-instance.json")["staticData"]
+    res = run(node_code("Due for attempt?"), static=static, now=NOW + 60_000, env={"HUNTER_OCI_A1_OCPUS": "2"})
+    assert res["result"] == []
+
+
+def test_the_requested_size_comes_from_the_environment(run):
+    res = run(node_code("Cost guard"), routes=guard_routes(), env={"HUNTER_OCI_A1_OCPUS": "2", "HUNTER_OCI_A1_MEMORY_GB": "12"})
+    request = first_json(res)["request"]
+    assert (request["ocpus"], request["memoryInGBs"]) == (2, 12)
 
 
 def test_out_of_capacity_keeps_the_claimer_due(run):
