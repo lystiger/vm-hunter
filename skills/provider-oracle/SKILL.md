@@ -39,7 +39,12 @@ The static checker fails a workflow whose launch request does not come after the
   `sourceDetails: { sourceType: "image", imageId, bootVolumeSizeInGBs }`,
   `createVnicDetails: { subnetId, assignPublicIp: true }`, `metadata: { ssh_authorized_keys }`, `displayName`.
 
-## Signing (open question O1)
+## Signing (O1 settled)
+
+Settled 2026-10-24 on the pinned n8n 1.123.87: a Code node can `require('crypto')` and sign RSA-SHA256
+when `NODE_FUNCTION_ALLOW_BUILTIN=crypto` is set; without it, `Cannot find module 'crypto'`. Do not
+re-investigate this.
+
 
 OCI uses HTTP signatures (`Authorization: Signature version="1",keyId="<tenancy>/<user>/<fingerprint>",
 algorithm="rsa-sha256",headers="...",signature="<base64>"`).
