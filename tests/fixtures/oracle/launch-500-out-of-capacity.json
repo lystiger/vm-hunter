@@ -1,0 +1,5 @@
+{
+  "status": 500,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-500"},
+  "body": {"code": "InternalError", "message": "Out of host capacity."}
+}

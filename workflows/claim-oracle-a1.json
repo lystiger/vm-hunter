@@ -1,0 +1,357 @@
+{
+  "id": "claimOracleA1",
+  "name": "Claim Oracle A1",
+  "active": false,
+  "nodes": [
+    {
+      "id": "7f469f0c-c1b1-4ace-a925-81e69a4c2bf3",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "2fec44ae-508f-44a9-875b-547ddab803e9",
+      "name": "Due for attempt?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Due for attempt?: pass one item when the claimer may try now: not claimed, not stopped, and the wait since the last attempt has passed.\nconst data = $getWorkflowStaticData('global');\nif (data.claimed || data.stopped || Date.now() < (data.nextAttemptAt ?? 0)) return [];\n// Hold the claimer while this attempt runs, so a run that starts meanwhile cannot launch a second instance.\ndata.nextAttemptAt = Date.now() + 15 * 60 * 1000;\nreturn [{ json: { due: true } }];\n"
+      }
+    },
+    {
+      "id": "9e99000b-8f2c-474d-b075-b4bcf4e2ccc6",
+      "name": "Jitter",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ Math.floor(Math.random() * 31) }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "82b6df63-1703-470d-8a43-c91c10a415b7",
+      "name": "Cost guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Cost guard: count the A1 instances and the boot and block volumes that exist, and refuse the launch unless the request still fits the Always Free limits.\n// A list request that fails, or runs past MAX_PAGES, is a refusal too: an unknown total is not a free total.\nconst crypto = require('crypto');\nconst helpers = this.helpers;\n\nconst LIMIT_OCPUS = 4;\nconst LIMIT_MEMORY_GB = 24;\nconst LIMIT_STORAGE_GB = 200;\nconst MAX_PAGES = 100;\nconst REQUEST = { shape: 'VM.Standard.A1.Flex', ocpus: 4, memoryInGBs: 24, bootVolumeSizeInGBs: 50, displayName: 'vm-hunter-a1' };\n\nconst base = $env.HUNTER_OCI_API_BASE;\n// The Code node sandbox has no URL global, so take the host from the base URL by hand.\nconst host = base.replace(/^https?:\\/\\//, '').split('/')[0];\nconst keyId = [$env.HUNTER_OCI_TENANCY_OCID, $env.HUNTER_OCI_USER_OCID, $env.HUNTER_OCI_KEY_FINGERPRINT].join('/');\n// The PEM may arrive with literal \\n sequences when it is set as one line in the environment.\nconst key = $env.HUNTER_OCI_PRIVATE_KEY_PEM.replace(/\\\\n/g, '\\n');\nconst compartment = encodeURIComponent($env.HUNTER_OCI_COMPARTMENT_OCID);\nconst domain = encodeURIComponent($env.HUNTER_OCI_AVAILABILITY_DOMAIN);\n\n// Signed GET (OCI HTTP signatures): the signing string covers the request target, the date and the host.\nfunction signedGet(target) {\n  const date = new Date().toUTCString();\n  const signing = [`(request-target): get ${target}`, `date: ${date}`, `host: ${host}`].join('\\n');\n  const signature = crypto.sign('sha256', Buffer.from(signing), key).toString('base64');\n  return { date, authorization: `Signature version=\"1\",keyId=\"${keyId}\",algorithm=\"rsa-sha256\",headers=\"(request-target) date host\",signature=\"${signature}\"` };\n}\n\n// Every page of one list request, as one array. Throws on any failure.\nasync function listAll(path) {\n  const items = [];\n  let page = '';\n  for (let pages = 0; pages < MAX_PAGES; pages++) {\n    const target = page ? `${path}&page=${encodeURIComponent(page)}` : path;\n    const response = await helpers.httpRequest({ method: 'GET', url: base + target, headers: signedGet(target), returnFullResponse: true, ignoreHttpStatusErrors: true });\n    if (response.statusCode !== 200) throw new Error(`${path.split('?')[0]} returned HTTP ${response.statusCode}`);\n    const list = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;\n    items.push(...list);\n    page = response.headers['opc-next-page'] ?? '';\n    if (!page) return items;\n  }\n  throw new Error(`${path.split('?')[0]} has more than ${MAX_PAGES} pages`);\n}\n\nconst data = $getWorkflowStaticData('global');\nconst metrics = data.metrics ?? { counters: {}, alerted: {} };\nconst problems = [];\nlet used = '';\ntry {\n  const instances = await listAll(`/20160918/instances?compartmentId=${compartment}`);\n  const bootVolumes = await listAll(`/20160918/bootVolumes?compartmentId=${compartment}&availabilityDomain=${domain}`);\n  const blockVolumes = await listAll(`/20160918/volumes?compartmentId=${compartment}`);\n\n  const a1 = instances.filter((i) => i.shape === REQUEST.shape && i.lifecycleState !== 'TERMINATED');\n  const usedOcpus = a1.reduce((sum, i) => sum + (i.shapeConfig?.ocpus ?? 0), 0);\n  const usedMemory = a1.reduce((sum, i) => sum + (i.shapeConfig?.memoryInGBs ?? 0), 0);\n  const usedStorage = [...bootVolumes, ...blockVolumes]\n    .filter((v) => !['TERMINATED', 'TERMINATING'].includes(v.lifecycleState))\n    .reduce((sum, v) => sum + (v.sizeInGBs ?? 0), 0);\n  used = `Existing: ${usedOcpus} OCPU, ${usedMemory} GB memory, ${usedStorage} GB storage.`;\n\n  if (REQUEST.shape !== 'VM.Standard.A1.Flex') problems.push(`shape ${REQUEST.shape} is not free`);\n  if (usedOcpus + REQUEST.ocpus > LIMIT_OCPUS) problems.push(`OCPUs would be ${usedOcpus + REQUEST.ocpus}, the limit is ${LIMIT_OCPUS}`);\n  if (usedMemory + REQUEST.memoryInGBs > LIMIT_MEMORY_GB) problems.push(`memory would be ${usedMemory + REQUEST.memoryInGBs} GB, the limit is ${LIMIT_MEMORY_GB} GB`);\n  if (usedStorage + REQUEST.bootVolumeSizeInGBs > LIMIT_STORAGE_GB) problems.push(`storage would be ${usedStorage + REQUEST.bootVolumeSizeInGBs} GB, the limit is ${LIMIT_STORAGE_GB} GB`);\n} catch (error) {\n  problems.push(`could not list existing resources: ${error.message}`);\n}\n\nif (problems.length) {\n  // A refusal stops the claimer until its static data is reset; it is never retried.\n  data.stopped = true;\n  const counters = metrics.counters ?? {};\n  counters.costGuardRefusals = (counters.costGuardRefusals ?? 0) + 1;\n  data.metrics = { ...metrics, counters };\n  return [{ json: { kind: 'failure', title: 'Cost guard refused the A1 launch', body: [...problems, used, 'The claimer has stopped.'].filter(Boolean).join('\\n'), url: '' } }];\n}\nreturn [{ json: { kind: '', title: '', body: '', url: '', request: REQUEST } }];\n"
+      }
+    },
+    {
+      "id": "074ee4f4-17da-4daf-a0ee-89977a8e7436",
+      "name": "Refused?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dae2fda2-791f-4818-81e8-6d102d684480",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "failure",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0f101d19-84aa-4b4c-85f2-1f707fbcac85",
+      "name": "Launch instance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Launch instance: sign the launch request and send it. Runs only after the cost guard let it through.\nconst crypto = require('crypto');\nconst { request } = $input.first().json;\nconst base = $env.HUNTER_OCI_API_BASE;\nconst target = '/20160918/instances';\n// The Code node sandbox has no URL global, so take the host from the base URL by hand.\nconst host = base.replace(/^https?:\\/\\//, '').split('/')[0];\nconst keyId = [$env.HUNTER_OCI_TENANCY_OCID, $env.HUNTER_OCI_USER_OCID, $env.HUNTER_OCI_KEY_FINGERPRINT].join('/');\nconst key = $env.HUNTER_OCI_PRIVATE_KEY_PEM.replace(/\\\\n/g, '\\n');\n\nconst body = JSON.stringify({\n  availabilityDomain: $env.HUNTER_OCI_AVAILABILITY_DOMAIN,\n  compartmentId: $env.HUNTER_OCI_COMPARTMENT_OCID,\n  displayName: request.displayName,\n  shape: request.shape,\n  shapeConfig: { ocpus: request.ocpus, memoryInGBs: request.memoryInGBs },\n  sourceDetails: { sourceType: 'image', imageId: $env.HUNTER_OCI_IMAGE_OCID, bootVolumeSizeInGBs: request.bootVolumeSizeInGBs },\n  createVnicDetails: { subnetId: $env.HUNTER_OCI_SUBNET_OCID, assignPublicIp: true },\n  metadata: { ssh_authorized_keys: $env.HUNTER_OCI_SSH_PUBLIC_KEY },\n});\nconst date = new Date().toUTCString();\nconst digest = crypto.createHash('sha256').update(body).digest('base64');\nconst contentType = 'application/json';\nconst contentLength = String(Buffer.byteLength(body));\nconst signing = [\n  `(request-target): post ${target}`,\n  `date: ${date}`,\n  `host: ${host}`,\n  `x-content-sha256: ${digest}`,\n  `content-type: ${contentType}`,\n  `content-length: ${contentLength}`,\n].join('\\n');\nconst signature = crypto.sign('sha256', Buffer.from(signing), key).toString('base64');\n\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: base + target,\n  headers: {\n    date,\n    'x-content-sha256': digest,\n    'content-type': contentType,\n    'content-length': contentLength,\n    authorization: `Signature version=\"1\",keyId=\"${keyId}\",algorithm=\"rsa-sha256\",headers=\"(request-target) date host x-content-sha256 content-type content-length\",signature=\"${signature}\"`,\n  },\n  body,\n  returnFullResponse: true,\n  ignoreHttpStatusErrors: true,\n});\nlet responseBody = response.body;\ntry {\n  if (typeof responseBody === 'string') responseBody = JSON.parse(responseBody);\n} catch {\n  // Keep the raw text when the body is not JSON.\n}\nreturn [{ json: { statusCode: response.statusCode, headers: response.headers, body: responseBody } }];\n"
+      }
+    },
+    {
+      "id": "c11d2b6d-dd11-47b9-876d-05f97710de39",
+      "name": "Read response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Read response: classify one launch response, update the claimer's counters and the wait before the next attempt, and pass on the message to send (if any).\nconst { statusCode, headers = {}, body = {} } = $input.first().json;\nconst data = $getWorkflowStaticData('global');\nconst metrics = data.metrics ?? { counters: {}, alerted: {} };\nconst counters = metrics.counters ?? {};\nconst today = new Intl.DateTimeFormat('en-CA', { timeZone: $env.GENERIC_TIMEZONE || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());\nconst message = typeof body === 'object' && body ? body.message ?? '' : '';\nconst requestId = headers['opc-request-id'] ?? '';\ncounters.attempts = (counters.attempts ?? 0) + 1;\n\nlet outcome = 'error';\nlet wait = 60;\nlet consecutive429 = 0;\nlet notice = { kind: '', title: '', body: '', url: '' };\n\nif (statusCode === 200 && body.id) {\n  outcome = 'claimed';\n  counters.success = (counters.success ?? 0) + 1;\n  data.claimed = { id: body.id, claimedAt: new Date().toISOString() };\n  notice = { kind: 'claim', title: `A1 VM created: ${body.displayName}`, body: `Instance ${body.id}\\n${body.shape}, ${body.shapeConfig?.ocpus} OCPU, ${body.shapeConfig?.memoryInGBs} GB\\nAttempts: ${counters.attempts}`, url: '' };\n} else if (statusCode === 500 && message.includes('Out of host capacity')) {\n  outcome = 'capacity';\n  counters.outOfCapacity = (counters.outOfCapacity ?? 0) + 1;\n} else if (statusCode === 429) {\n  outcome = 'throttled';\n  counters.rateLimited = (counters.rateLimited ?? 0) + 1;\n  consecutive429 = (metrics.consecutive429 ?? 0) + 1;\n  // Doubles from 60 seconds, capped at 15 minutes; a longer Retry-After from Oracle is honoured within the cap.\n  const retryAfter = Number(headers['retry-after']) || 0;\n  wait = Math.min(900, Math.max(60 * 2 ** (consecutive429 - 1), retryAfter));\n  if (wait === 900 && metrics.alerted?.capReached !== today) {\n    metrics.alerted = { ...(metrics.alerted ?? {}), capReached: today };\n    notice = { kind: 'alert', title: 'A1 claim at the 15-minute rate-limit wait', body: `Rate limited (HTTP 429) on ${consecutive429} attempts in a row. The claimer keeps trying every 15 minutes.`, url: '' };\n  }\n} else if ([400, 401, 404].includes(statusCode)) {\n  // Configuration problem: retrying cannot fix it, so the claimer stops until its configuration is fixed.\n  outcome = 'config';\n  counters.configErrors = (counters.configErrors ?? 0) + 1;\n  data.stopped = true;\n  notice = { kind: 'failure', title: `A1 claim stopped: HTTP ${statusCode}`, body: `${body.code ?? 'unknown'}: ${message}\\nRequest id: ${requestId}\\nThe claimer will not retry until its configuration is fixed.`, url: '' };\n} else {\n  counters.errors = (counters.errors ?? 0) + 1;\n}\n\nmetrics.counters = counters;\nmetrics.day = metrics.day ?? today;\nmetrics.consecutive429 = consecutive429;\nmetrics.currentWaitSeconds = wait;\ndata.metrics = metrics;\ndata.nextAttemptAt = Date.now() + wait * 1000;\nreturn [{ json: { outcome, ...notice } }];\n"
+      }
+    },
+    {
+      "id": "a2fff59f-d93a-4ba9-ba99-ca5eaa0bd971",
+      "name": "Has message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d1f17a9-6d42-4d01-bc40-19cb96ee2bfb",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3ca017f0-2c1a-460a-93e6-726ea01ce91b",
+      "name": "Notify Discord",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      }
+    },
+    {
+      "id": "167db079-e6fe-4b93-aaf1-fd72a7dc259b",
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "02568750-7e51-41a9-bf70-98e6d0694af8",
+      "name": "Shape summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shape summary: build the 09:00 claimer summary line from the counters, then reset the counters for the new local day.\nconst today = new Intl.DateTimeFormat('en-CA', { timeZone: $env.GENERIC_TIMEZONE || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());\nconst data = $getWorkflowStaticData('global');\nconst metrics = data.metrics ?? { counters: {}, alerted: {} };\nconst c = metrics.counters ?? {};\nconst state = data.claimed ? 'claimed' : data.stopped ? 'stopped' : 'hunting';\nconst line = `Claimer · ${c.attempts ?? 0} attempts · ${c.outOfCapacity ?? 0} out of capacity · ${c.rateLimited ?? 0} rate limited · ${c.errors ?? 0} errors · ${c.costGuardRefusals ?? 0} cost guard refusals · ${state}`;\ndata.metrics = { day: today, counters: {}, alerted: metrics.alerted ?? {} };\nreturn [{ json: { kind: 'summary', title: `Claimer summary (${metrics.day ?? today})`, body: line, url: '' } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Due for attempt?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Due for attempt?": {
+      "main": [
+        [
+          {
+            "node": "Jitter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jitter": {
+      "main": [
+        [
+          {
+            "node": "Cost guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cost guard": {
+      "main": [
+        [
+          {
+            "node": "Refused?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refused?": {
+      "main": [
+        [
+          {
+            "node": "Notify Discord",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Launch instance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Launch instance": {
+      "main": [
+        [
+          {
+            "node": "Read response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read response": {
+      "main": [
+        [
+          {
+            "node": "Has message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has message?": {
+      "main": [
+        [
+          {
+            "node": "Notify Discord",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Shape summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape summary": {
+      "main": [
+        [
+          {
+            "node": "Notify Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "errorReport01"
+  },
+  "pinData": {}
+}

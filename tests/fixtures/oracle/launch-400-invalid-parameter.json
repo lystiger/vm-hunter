@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-400"},
+  "body": {"code": "InvalidParameter", "message": "Invalid parameter in the request body."}
+}

@@ -1,0 +1,5 @@
+{
+  "status": 429,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-429"},
+  "body": {"code": "TooManyRequests", "message": "Too many requests for the user"}
+}

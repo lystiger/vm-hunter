@@ -85,3 +85,10 @@ would export. Check your result with the `verify-workflow` skill.
 - Set `settings.errorWorkflow` to the error workflow id, so every failure is reported (`notify-discord` skill).
 - For an expected failure (Oracle "Out of host capacity", HTTP 429), enable the HTTP node's
   "Never Error" / continue-on-fail option and branch on the status code instead of failing the run.
+
+## Code node sandbox limits (n8n 1.123.87)
+
+- Tests run Code node source under plain node, which has more globals than n8n's sandbox. `URL` is
+  **not** defined in the sandbox (`ReferenceError: URL is not defined`); parse URLs by hand.
+- `require` works only for modules listed in `NODE_FUNCTION_ALLOW_BUILTIN` (the VM sets `crypto`).
+- `this.helpers.httpRequest` works (checked against a fake OCI server on 2026-10-24).

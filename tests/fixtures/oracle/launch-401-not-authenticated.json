@@ -1,0 +1,5 @@
+{
+  "status": 401,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-401"},
+  "body": {"code": "NotAuthenticated", "message": "The required information to complete authentication was not provided or was incorrect."}
+}

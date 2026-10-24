@@ -1,0 +1,13 @@
+{
+  "status": 200,
+  "headers": {},
+  "body": [
+    {
+      "id": "ocid1.volume.oc1..example",
+      "availabilityDomain": "EXAMPLE-AD-1",
+      "compartmentId": "ocid1.compartment.oc1..example",
+      "sizeInGBs": 50,
+      "lifecycleState": "AVAILABLE"
+    }
+  ]
+}
