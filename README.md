@@ -5,4 +5,4 @@ offers, reporting to Discord. Workflows live in `workflows/` as exported JSON; t
 copies imported from here.
 
 - Agents and contributors: start with [AGENTS.md](AGENTS.md).
-- Running it on your VM: `docs/vm-setup.md` (written in a later step).
+- Running it on your VM: [docs/vm-setup.md](docs/vm-setup.md).
