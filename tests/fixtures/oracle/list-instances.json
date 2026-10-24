@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "headers": {},
+  "body": [
+    {
+      "id": "ocid1.instance.oc1..example",
+      "displayName": "vm-hunter-a1-existing",
+      "compartmentId": "ocid1.compartment.oc1..example",
+      "availabilityDomain": "EXAMPLE-AD-1",
+      "shape": "VM.Standard.A1.Flex",
+      "shapeConfig": {"ocpus": 2.0, "memoryInGBs": 12.0},
+      "lifecycleState": "RUNNING",
+      "timeCreated": "2026-10-23T08:00:00.000Z"
+    }
+  ]
+}

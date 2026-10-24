@@ -1,0 +1,5 @@
+{
+  "status": 404,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-404"},
+  "body": {"code": "NotAuthorizedOrNotFound", "message": "Either the resource does not exist or you are not authorized to access it."}
+}
