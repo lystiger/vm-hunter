@@ -34,7 +34,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Due for attempt?: pass one item when the claimer may try now: not claimed, not stopped, and the wait since the last attempt has passed.\nconst data = $getWorkflowStaticData('global');\nif (data.claimed || data.stopped || Date.now() < (data.nextAttemptAt ?? 0)) return [];\nreturn [{ json: { due: true } }];\n"
+        "jsCode": "// Due for attempt?: pass one item when the claimer may try now: not claimed, not stopped, and the wait since the last attempt has passed.\nconst data = $getWorkflowStaticData('global');\nif (data.claimed || data.stopped || Date.now() < (data.nextAttemptAt ?? 0)) return [];\n// Hold the claimer while this attempt runs, so a run that starts meanwhile cannot launch a second instance.\ndata.nextAttemptAt = Date.now() + 15 * 60 * 1000;\nreturn [{ json: { due: true } }];\n"
       }
     },
     {
