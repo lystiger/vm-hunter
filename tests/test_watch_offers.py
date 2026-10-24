@@ -24,7 +24,7 @@ STAMP = "2026-10-24T12:00:00.000Z"  # the same instant as the node writes it (to
 DAY = "2026-10-24"
 LOWEND = "https://lowendbox.example.test/deals/"
 
-# The six offers under the wanted headings (Hosting, Servers) of the fixture, in README order.
+# The six offers under the wanted headings (Web Hosting, IaaS) of the fixture, in README order.
 WANTED_OFFERS = [
     ("Example Pages", "https://pages.example.test"),
     ("Sample Compute", "https://compute.example.test"),
@@ -216,7 +216,7 @@ def test_seen_entries_older_than_180_days_are_dropped(tmp_path):
 
 @needs_node
 def test_at_most_ten_offers_are_listed_and_the_rest_counted(tmp_path):
-    markdown = "## Hosting\n\n" + "".join(
+    markdown = "## Web Hosting\n\n" + "".join(
         f"  * [Host {n}](https://host{n}.example.test) — free tier\n" for n in range(1, 13))
     items, _ = run_watch(tmp_path, PAID_FEED, fetched(markdown), {"seen": {}})
     assert len(items) == 1
@@ -301,3 +301,11 @@ def test_retry_after_is_never_shorter_than_60_seconds(tmp_path):
 def test_retry_after_http_date_is_the_seconds_until_that_time(tmp_path):
     items, _ = run_watch(tmp_path, [{"headers": {"retry-after": "Sat, 24 Oct 2026 12:20:00 GMT"}}], {}, {}, node=RETRY)
     assert items == [{"seconds": 1200}]
+
+
+def test_every_notify_call_sends_one_item_per_run():
+    # notify-discord sends only its first input item, so several alerts in one run need one call each.
+    workflow = json.loads(WORKFLOW.read_text(encoding="utf-8"))
+    calls = [node for node in workflow["nodes"] if node["type"] == "n8n-nodes-base.executeWorkflow"]
+    assert calls
+    assert all(node["parameters"].get("mode") == "each" for node in calls)
