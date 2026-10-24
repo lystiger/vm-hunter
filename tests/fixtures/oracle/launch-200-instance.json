@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "headers": {"opc-request-id": "EXAMPLE-REQUEST-ID-200"},
+  "body": {
+    "id": "ocid1.instance.oc1..example",
+    "displayName": "vm-hunter-a1",
+    "compartmentId": "ocid1.compartment.oc1..example",
+    "availabilityDomain": "EXAMPLE-AD-1",
+    "shape": "VM.Standard.A1.Flex",
+    "shapeConfig": {"ocpus": 4.0, "memoryInGBs": 24.0},
+    "lifecycleState": "PROVISIONING",
+    "timeCreated": "2026-10-24T08:00:00.000Z"
+  }
+}
