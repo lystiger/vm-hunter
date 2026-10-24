@@ -11,11 +11,22 @@
       "position": [0, 0]
     },
     {
+      "id": "3a7e1f52-9d4c-4b6e-8f0a-5c2d7e9b1f34",
+      "name": "Count failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Count failure: count one failed run of a workflow in the error report's static data, per workflow name.\n// The counters belong to one local day (GENERIC_TIMEZONE, UTC when unset): the first failure on a new day resets them.\n// Runs before Build failure message. n8n saves static data only from a run that succeeds, so this count is kept only when\n// this run's failure notice is delivered; if the notice fails, the run fails and the count is lost too (see the monitoring skill).\n// The name defaults to 'unknown workflow', as in Build failure message. Other metrics are kept as they are.\nfunction localDay(now, timeZone) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);\n}\n\nfunction countFailure(metrics, day, workflowName) {\n  // A new day starts with empty counters and no alerts sent yet.\n  const current = metrics?.day === day ? metrics : { ...(metrics ?? {}), day, counters: {}, alerted: {} };\n  const counters = { ...(current.counters ?? {}) };\n  const failures = { ...(counters.failures ?? {}) };\n  failures[workflowName] = (failures[workflowName] ?? 0) + 1;\n  counters.failures = failures;\n  return { ...current, counters };\n}\n\nconst data = $getWorkflowStaticData('global');\nconst payload = $input.first().json;\nconst day = localDay(new Date(), $env.GENERIC_TIMEZONE || 'UTC');\ndata.metrics = countFailure(data.metrics, day, payload.workflow?.name || 'unknown workflow');\nreturn [{ json: payload }];"
+      }
+    },
+    {
       "id": "9c3f5d28-6a4b-4e0f-b7d2-3f8c1e5a0b69",
       "name": "Build failure message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [220, 0],
+      "position": [440, 0],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "// Build failure message: turn one Error Trigger payload into a notify input {kind, title, body, url}.\n// Body holds the failed node and the error message, cut to 1500 characters with '…' so it stays readable.\nconst LIMIT_BODY = 1500;\nconst LIMIT_TITLE = 200;\n\n// Cut text to max characters (code points). Adds '…' only when it had to cut.\nfunction clip(text, max) {\n  const chars = Array.from(String(text ?? ''));\n  return chars.length <= max ? chars.join('') : chars.slice(0, max - 1).join('') + '…';\n}\n\nconst payload = $input.first().json;\nconst workflowName = payload.workflow?.name || 'unknown workflow';\nconst execution = payload.execution || {};\nconst error = execution.error || {};\n// The failing node is on the error for node errors; otherwise the last node that ran is the best guess.\nconst nodeName = error.node?.name || execution.lastNodeExecuted || 'unknown node';\nconst message = error.message || 'no error message';\n\nconst body = clip(`Node: ${nodeName}\\nError: ${message}`, LIMIT_BODY);\nconst title = clip(`Workflow failed: ${workflowName}`, LIMIT_TITLE);\n\nreturn [{ json: { kind: 'failure', title, body, url: execution.url || '' } }];"
@@ -26,7 +37,46 @@
       "name": "Notify Discord",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [440, 0],
+      "position": [660, 0],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "notifyDiscord01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "kind": "={{ $json.kind }}",
+            "title": "={{ $json.title }}",
+            "body": "={{ $json.body }}",
+            "url": "={{ $json.url }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c5d2e8f1-4a7b-4e6c-9d3f-1b8a6e0c2f47",
+      "name": "Build alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build alert: once a workflow has failed more than ALERT_AFTER times today, build one alert for it (kind alert).\n// Sent once per workflow per day: the key is kept in static data, which is saved only when this run succeeds.\n// Returns no item for every other failure, so Notify alert does not run.\nconst ALERT_AFTER = 3;\n\nconst data = $getWorkflowStaticData('global');\nconst name = $('Error input').first().json.workflow?.name || 'unknown workflow';\nconst count = data.metrics?.counters?.failures?.[name] ?? 0;\nconst key = `failures:${name}`;\nif (count <= ALERT_AFTER || data.metrics.alerted?.[key]) return [];\ndata.metrics.alerted = { ...(data.metrics.alerted ?? {}), [key]: true };\n\nconst title = `Repeated failures: ${name}`;\nconst body = `${count} failures today (alert above ${ALERT_AFTER}). The n8n executions list shows each one.`;\nreturn [{ json: { kind: 'alert', title, body, url: '' } }];"
+      }
+    },
+    {
+      "id": "e1f7a3b9-2d6c-4a85-8b0e-7c4d9f2a5e61",
+      "name": "Notify alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1100, 0],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -52,10 +102,19 @@
   ],
   "connections": {
     "Error input": {
+      "main": [[{ "node": "Count failure", "type": "main", "index": 0 }]]
+    },
+    "Count failure": {
       "main": [[{ "node": "Build failure message", "type": "main", "index": 0 }]]
     },
     "Build failure message": {
       "main": [[{ "node": "Notify Discord", "type": "main", "index": 0 }]]
+    },
+    "Notify Discord": {
+      "main": [[{ "node": "Build alert", "type": "main", "index": 0 }]]
+    },
+    "Build alert": {
+      "main": [[{ "node": "Notify alert", "type": "main", "index": 0 }]]
     }
   },
   "settings": { "executionOrder": "v1" },

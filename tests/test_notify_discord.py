@@ -27,22 +27,78 @@ LIMIT_CONTENT = 2000
 LIMIT_DESCRIPTION = 4096
 LIMIT_EMBEDS = 10
 
-# Runs the Code node body the way n8n does: $input.first() gives the item, the body returns the output items.
+# Runs the Code node body the way n8n does: $input.first() gives the item, $env the environment, $('Name') an earlier
+# node's output and $getWorkflowStaticData the static data. The context file holds input, env, nodes and staticData.
 RUNNER = """
 const fs = require('fs');
 const code = fs.readFileSync(process.argv[2], 'utf8');
-const input = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-const run = new Function('$input', code);
-const out = run({ first: () => ({ json: input }) });
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const run = new Function('$input', '$env', '$', '$getWorkflowStaticData', code);
+const out = run({ first: () => ({ json: ctx.input }) }, ctx.env ?? {}, $, () => staticData);
 process.stdout.write(JSON.stringify(out[0].json));
 """
 
-# Evaluates one n8n expression body (the text inside ={{ }}) with $json bound to the given item.
+# Runs the Count delivery body with $getWorkflowStaticData bound to the context's staticData, then prints that static
+# data, so a test passes the metrics object in and reads back what the node wrote.
+COUNT_RUNNER = """
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+new Function('$input', '$', '$getWorkflowStaticData', code)({ first: () => ({ json: ctx.input }) }, $, () => ctx.staticData);
+process.stdout.write(JSON.stringify(ctx.staticData));
+"""
+
+# Runs an error report Code node body with $getWorkflowStaticData, $env and $('Name') bound as in n8n, and with the clock
+# fixed at ctx.now, so the day logic gets "now" from the test. Prints the items the node returned and the static data.
+CLOCK_RUNNER = """
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const FixedDate = class extends Date {
+  constructor(...args) { super(...(args.length ? args : [ctx.now])); }
+};
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const out = new Function('$input', '$env', '$', '$getWorkflowStaticData', 'Date', code)(
+  { first: () => ({ json: ctx.input }) }, ctx.env ?? {}, $, () => staticData, FixedDate);
+process.stdout.write(JSON.stringify({ items: out.map((item) => item.json), staticData }));
+"""
+
+# Chains the Check delivery body and then the Count delivery body, the way n8n runs them: a throw in Check delivery stops
+# the run before Count delivery. Prints the static data as it stands and whether the run succeeded, so a test can see
+# that a failed run left the counters alone.
+CHAIN_RUNNER = """
+const fs = require('fs');
+const check = fs.readFileSync(process.argv[2], 'utf8');
+const count = fs.readFileSync(process.argv[3], 'utf8');
+const ctx = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+const staticData = ctx.staticData ?? {};
+const run = (code, input) => new Function('$input', '$', '$getWorkflowStaticData', code)(
+  { first: () => ({ json: input }) }, $, () => staticData);
+let ok = true;
+let error = null;
+try {
+  const checked = run(check, ctx.input);
+  run(count, checked[0].json);
+} catch (e) {
+  ok = false;
+  error = e.message;
+}
+process.stdout.write(JSON.stringify({ ok, error, staticData }));
+"""
+
+# Evaluates one n8n expression body (the text inside ={{ }}) with $json, $env and $('Name') bound, as n8n does.
+# The context file holds json (the item), env and nodes (earlier node outputs by name).
 EXPRESSION_RUNNER = """
 const fs = require('fs');
 const expr = fs.readFileSync(process.argv[2], 'utf8');
-const json = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-process.stdout.write(JSON.stringify(new Function('$json', 'return (' + expr + ');')(json)));
+const ctx = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const $ = (name) => ({ first: () => ({ json: ctx.nodes?.[name] ?? null }) });
+process.stdout.write(JSON.stringify(new Function('$json', '$env', '$', 'return (' + expr + ');')(ctx.json, ctx.env ?? {}, $)));
 """
 
 
@@ -54,16 +110,21 @@ def node_named(name, path=WORKFLOW):
     return next(node for node in load_workflow(path)["nodes"] if node["name"] == name)
 
 
-def run_code(tmp_path, code, item):
-    """Run one Code node body on one input item. Returns the CompletedProcess."""
+def run_js(tmp_path, runner, code, context):
+    """Write the code, the runner and the context to tmp_path and run them under node. Returns the CompletedProcess."""
     code_path = tmp_path / "code.js"
     code_path.write_text(code, encoding="utf-8")
     runner_path = tmp_path / "runner.js"
-    runner_path.write_text(RUNNER, encoding="utf-8")
-    input_path = tmp_path / "input.json"
-    input_path.write_text(json.dumps(item), encoding="utf-8")
-    return subprocess.run([NODE, str(runner_path), str(code_path), str(input_path)],
+    runner_path.write_text(runner, encoding="utf-8")
+    context_path = tmp_path / "context.json"
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    return subprocess.run([NODE, str(runner_path), str(code_path), str(context_path)],
                           capture_output=True, text=True, timeout=30, check=False)
+
+
+def run_code(tmp_path, code, item, env=None, nodes=None):
+    """Run one Code node body on one input item, with optional $env values and earlier node outputs."""
+    return run_js(tmp_path, RUNNER, code, {"input": item, "env": env or {}, "nodes": nodes or {}})
 
 
 def run_format(tmp_path, item):
@@ -85,19 +146,32 @@ def build_failure(tmp_path, item):
     return json.loads(result.stdout)
 
 
-def evaluate_expression(tmp_path, expression, item):
+def evaluate_expression(tmp_path, expression, item, env=None, nodes=None):
     """Evaluate an n8n expression such as '={{ ... }}' on one item, the way the Wait node reads it."""
     assert expression.startswith("={{") and expression.endswith("}}"), expression
     expr_path = tmp_path / "expr.js"
     expr_path.write_text(expression[3:-2].strip(), encoding="utf-8")
     runner_path = tmp_path / "expr-runner.js"
     runner_path.write_text(EXPRESSION_RUNNER, encoding="utf-8")
-    item_path = tmp_path / "item.json"
-    item_path.write_text(json.dumps(item), encoding="utf-8")
-    result = subprocess.run([NODE, str(runner_path), str(expr_path), str(item_path)],
+    context_path = tmp_path / "expr-context.json"
+    context_path.write_text(json.dumps({"json": item, "env": env or {}, "nodes": nodes or {}}), encoding="utf-8")
+    result = subprocess.run([NODE, str(runner_path), str(expr_path), str(context_path)],
                             capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def render_template(tmp_path, template, item, env=None, nodes=None):
+    """Render an n8n string field such as '={{ $env.X }}?thread_id={{ $json.id }}': each {{ }} is evaluated, the rest is text."""
+    parts = re.split(r"\{\{(.*?)\}\}", template.removeprefix("="))
+    rendered = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            value = evaluate_expression(tmp_path, "={{" + part + "}}", item, env, nodes)
+            rendered.append(str(value))
+        else:
+            rendered.append(part)
+    return "".join(rendered)
 
 
 def fixture(name):
@@ -197,11 +271,22 @@ def test_node_ids_are_unique_uuids():
         assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", node_id), node_id
 
 
+POST_URL = "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id={{ encodeURIComponent($json.threadId) }}"
+RETRY_URL = ("={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}?thread_id="
+             "{{ encodeURIComponent($('Resolve thread').first().json.threadId) }}")
+
+
 def test_webhook_comes_from_environment_and_never_throws_on_4xx():
     for name in ("Post to Discord", "Retry once"):
         params = node_named(name)["parameters"]
-        assert params["url"] == "={{ $env.HUNTER_DISCORD_WEBHOOK_URL }}"
+        assert params["url"] == {"Post to Discord": POST_URL, "Retry once": RETRY_URL}[name]
         assert params["options"]["response"]["response"] == {"fullResponse": True, "neverError": True}
+
+
+@needs_node
+def test_thread_id_is_url_encoded_in_the_post_url(tmp_path):
+    assert evaluate_expression(tmp_path, "={{ encodeURIComponent($json.threadId) }}",
+                               {"threadId": "a b/1?x"}) == "a%20b%2F1%3Fx"
 
 
 def test_429_branch_waits_retry_after_then_retries_once_without_loop():
@@ -211,17 +296,24 @@ def test_429_branch_waits_retry_after_then_retries_once_without_loop():
     assert rate_limited == [[{"node": "Wait for retry_after", "type": "main", "index": 0}],
                             [{"node": "Check delivery", "type": "main", "index": 0}]]
     assert connections["Wait for retry_after"]["main"] == [[{"node": "Retry once", "type": "main", "index": 0}]]
-    # The retry goes only to the delivery check, which has no outgoing connection, so nothing loops back.
+    # The retry goes only to the delivery check, which goes only to the counter, which has no outgoing connection.
     assert connections["Retry once"]["main"] == [[{"node": "Check delivery", "type": "main", "index": 0}]]
-    assert "Check delivery" not in connections
+    assert connections["Check delivery"]["main"] == [[{"node": "Count delivery", "type": "main", "index": 0}]]
+    assert "Count delivery" not in connections
     condition = node_named("Rate limited?")["parameters"]["conditions"]["conditions"][0]
     assert condition["rightValue"] == 429
     assert "retry_after" in node_named("Wait for retry_after")["parameters"]["amount"]
 
 
-def test_retry_resends_the_formatted_payload():
-    body = node_named("Retry once")["parameters"]["jsonBody"]
-    assert body == "={{ $('Format message').first().json }}"
+def test_retry_resends_the_resolved_message_to_the_same_thread():
+    assert node_named("Retry once")["parameters"]["jsonBody"] == "={{ $('Resolve thread').first().json.message }}"
+    assert node_named("Post to Discord")["parameters"]["jsonBody"] == "={{ $json.message }}"
+
+
+def test_message_flows_format_then_thread_then_post():
+    connections = load_workflow()["connections"]
+    assert connections["Format message"]["main"] == [[{"node": "Resolve thread", "type": "main", "index": 0}]]
+    assert connections["Resolve thread"]["main"] == [[{"node": "Post to Discord", "type": "main", "index": 0}]]
 
 
 @needs_node
@@ -321,7 +413,8 @@ def test_error_report_wiring():
     assert doc["active"] is False
     trigger = node_named("Error input", ERROR_WORKFLOW)
     assert trigger["type"] == "n8n-nodes-base.errorTrigger"
-    assert doc["connections"]["Error input"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
+    assert doc["connections"]["Error input"]["main"] == [[{"node": "Count failure", "type": "main", "index": 0}]]
+    assert doc["connections"]["Count failure"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
     assert doc["connections"]["Build failure message"]["main"] == [[{"node": "Notify Discord", "type": "main", "index": 0}]]
     notify = node_named("Notify Discord", ERROR_WORKFLOW)["parameters"]["workflowId"]
     assert notify["value"] == load_workflow()["id"] == "notifyDiscord01"
@@ -376,3 +469,426 @@ def test_non_2xx_after_post_fails_the_run(tmp_path, status):
     assert f"HTTP {status}" in result.stderr
 
 
+# Thread routing: which setting each kind reads, with HUNTER_DISCORD_THREAD_ID as the fallback.
+THREAD_SETTING = {
+    "offer": "HUNTER_DISCORD_THREAD_OFFERS",
+    "claim": "HUNTER_DISCORD_THREAD_CLAIMS",
+    "failure": "HUNTER_DISCORD_THREAD_FAILURES",
+    "summary": "HUNTER_DISCORD_THREAD_SUMMARY",
+    "alert": "HUNTER_DISCORD_THREAD_SUMMARY",
+}
+MESSAGE = {"username": "VM Hunter", "content": "t", "embeds": []}
+
+
+def resolve_thread(tmp_path, kind, env):
+    """Run the Resolve thread node for one kind with the given environment. Returns the CompletedProcess."""
+    code = node_named("Resolve thread")["parameters"]["jsCode"]
+    return run_code(tmp_path, code, MESSAGE, env=env, nodes={"Notify input": {"kind": kind, "title": "t"}})
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_each_kind_uses_its_own_thread_setting(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {THREAD_SETTING[kind]: "111", "HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"threadId": "111", "message": MESSAGE}
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_unset_setting_falls_back_to_thread_id(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {"HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["threadId"] == "999"
+
+
+@needs_node
+@pytest.mark.parametrize("blank", ["", "   ", "\t \n"])
+def test_blank_setting_counts_as_unset(tmp_path, blank):
+    result = resolve_thread(tmp_path, "claim", {"HUNTER_DISCORD_THREAD_CLAIMS": blank, "HUNTER_DISCORD_THREAD_ID": "999"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["threadId"] == "999"
+
+
+@needs_node
+def test_setting_value_is_trimmed(tmp_path):
+    result = resolve_thread(tmp_path, "offer", {"HUNTER_DISCORD_THREAD_OFFERS": " 123 \n"})
+    assert json.loads(result.stdout)["threadId"] == "123"
+
+
+@needs_node
+def test_no_thread_id_fails_naming_the_kind_and_the_settings_checked(tmp_path):
+    result = resolve_thread(tmp_path, "claim", {"HUNTER_DISCORD_THREAD_CLAIMS": " ", "HUNTER_DISCORD_THREAD_ID": ""})
+    assert result.returncode != 0
+    assert "kind 'claim'" in result.stderr
+    assert "HUNTER_DISCORD_THREAD_CLAIMS, HUNTER_DISCORD_THREAD_ID" in result.stderr
+
+
+@needs_node
+@pytest.mark.parametrize("kind,colour", [("summary", 0x95A5A6), ("alert", 0xF39C12)])
+def test_summary_and_alert_kinds_are_accepted_with_their_colour(tmp_path, kind, colour):
+    out = format_message(tmp_path, {"kind": kind, "title": "Daily summary", "body": "Claimer · 3 attempts"})
+    assert out["embeds"] == [{"color": colour, "description": "Claimer · 3 attempts"}]
+
+
+# Counters: the Count delivery node runs only after a 2xx, so it counts only successful runs.
+def count_delivery(tmp_path, first_status, final_status, static_data):
+    """Run Count delivery after a first post that got first_status and a final 2xx. Returns the static data it wrote."""
+    code = node_named("Count delivery")["parameters"]["jsCode"]
+    context = {"input": {"statusCode": final_status, "body": "", "headers": {}},
+               "nodes": {"Post to Discord": {"statusCode": first_status}}, "staticData": static_data}
+    result = run_js(tmp_path, COUNT_RUNNER, code, context)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@needs_node
+def test_204_counts_sent_and_keeps_the_rest_of_the_metrics(tmp_path):
+    metrics = {"day": "2026-10-23", "counters": {"sent": 4, "rateLimited": 1},
+               "lastSuccessAt": {"offers": "2026-10-23T08:00:00Z"}, "alerted": {"claimer-stalled": True}}
+    after = count_delivery(tmp_path, 204, 204, {"metrics": metrics})["metrics"]
+    assert after == dict(metrics, counters={"sent": 5, "rateLimited": 1})
+
+
+@needs_node
+def test_429_then_204_counts_sent_and_rate_limited(tmp_path):
+    after = count_delivery(tmp_path, 429, 204, {"metrics": {"counters": {"sent": 0, "rateLimited": 2}}})
+    assert after["metrics"]["counters"] == {"sent": 1, "rateLimited": 3}
+
+
+@needs_node
+def test_counters_start_at_zero_without_metrics(tmp_path):
+    assert count_delivery(tmp_path, 204, 204, {})["metrics"]["counters"] == {"sent": 1, "rateLimited": 0}
+
+
+def test_count_delivery_sits_after_the_delivery_check():
+    # Check delivery throws on a non-2xx, so a failed run never reaches the counter (see the monitoring skill).
+    assert node_named("Count delivery")["type"] == "n8n-nodes-base.code"
+    assert load_workflow()["connections"]["Check delivery"]["main"] == [[{"node": "Count delivery", "type": "main", "index": 0}]]
+
+
+
+
+# Failure counts: the error report's Count failure node counts each failed run per workflow name, in its static data.
+NOW = "2026-10-23T12:00:00Z"  # noon UTC: the same local day in every zone checked here
+TOMORROW = "2026-10-24T12:00:00Z"
+
+
+def run_error_node(tmp_path, name, item, static_data, now=NOW, env=None, nodes=None):
+    """Run one error report Code node with the clock at now. Returns (items the node returned, static data it left)."""
+    code = node_named(name, ERROR_WORKFLOW)["parameters"]["jsCode"]
+    context = {"input": item, "env": env or {}, "nodes": nodes or {}, "staticData": static_data, "now": now}
+    result = run_js(tmp_path, CLOCK_RUNNER, code, context)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    return out["items"], out["staticData"]
+
+
+def count_failure(tmp_path, payload, static_data, now=NOW, env=None):
+    """Run Count failure on one Error Trigger payload with the given static data. Returns the static data it wrote."""
+    _, after = run_error_node(tmp_path, "Count failure", payload, static_data, now, env)
+    return after
+
+
+def failure_run(tmp_path, payload, static_data, now=NOW):
+    """One error report run that reaches the alert check: Count failure, then Build alert. Returns (alert items, static data)."""
+    _, counted = run_error_node(tmp_path, "Count failure", payload, static_data, now)
+    return run_error_node(tmp_path, "Build alert", payload, counted, now, nodes={"Error input": payload})
+
+
+@needs_node
+def test_first_failure_of_a_workflow_counts_one_under_its_name(tmp_path):
+    payload = json.loads((FIXTURES / "error-trigger.input.json").read_text(encoding="utf-8"))
+    after = count_failure(tmp_path, payload, {})["metrics"]
+    assert after == {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_failures_add_up_per_name_and_keep_the_rest_of_the_metrics(tmp_path):
+    metrics = {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 2, "Watch offers": 1}, "other": 7},
+               "alerted": {"failures:Watch offers": True}, "lastSuccessAt": {"offers": "2026-10-23T09:00:00Z"}}
+    payload = {"workflow": {"name": "Claim A1 VM"}, "execution": {}}
+    after = count_failure(tmp_path, payload, {"metrics": metrics})["metrics"]
+    assert after == dict(metrics, counters={"failures": {"Claim A1 VM": 3, "Watch offers": 1}, "other": 7})
+
+
+@needs_node
+def test_missing_workflow_name_counts_under_unknown_workflow(tmp_path):
+    after = count_failure(tmp_path, {"execution": {}}, {})["metrics"]
+    assert after == {"day": METRICS_DAY, "counters": {"failures": {"unknown workflow": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_a_new_day_resets_the_counters_and_the_alerts(tmp_path):
+    metrics = {"day": "2026-10-22", "counters": {"failures": {"Claim A1 VM": 9}}, "alerted": {"failures:Claim A1 VM": True}}
+    after = count_failure(tmp_path, fixture("error-trigger"), {"metrics": metrics}, now=TOMORROW)["metrics"]
+    assert after == {"day": "2026-10-24", "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_the_day_is_local_to_generic_timezone(tmp_path):
+    # 23:30 UTC on 22 October is already 23 October in Berlin (UTC+2 in October), so only the Berlin count starts over.
+    metrics = {"day": "2026-10-22", "counters": {"failures": {"Claim A1 VM": 2}}, "alerted": {}}
+    late = "2026-10-22T23:30:00Z"
+    payload = fixture("error-trigger")
+    utc = count_failure(tmp_path, payload, {"metrics": metrics}, now=late)["metrics"]
+    berlin = count_failure(tmp_path, payload, {"metrics": metrics}, now=late,
+                           env={"GENERIC_TIMEZONE": "Europe/Berlin"})["metrics"]
+    assert utc["counters"] == {"failures": {"Claim A1 VM": 3}}
+    assert berlin == {"day": METRICS_DAY, "counters": {"failures": {"Claim A1 VM": 1}}, "alerted": {}}
+
+
+@needs_node
+def test_no_alert_up_to_three_failures_of_one_workflow(tmp_path):
+    payload = fixture("error-trigger")
+    static_data = {}
+    for _ in range(3):
+        items, static_data = failure_run(tmp_path, payload, static_data)
+        assert items == []
+    assert static_data["metrics"]["counters"]["failures"] == {"Claim A1 VM": 3}
+
+
+@needs_node
+def test_the_fourth_failure_of_a_workflow_in_a_day_sends_one_alert(tmp_path):
+    payload = fixture("error-trigger")
+    static_data = {}
+    alerts = []
+    for _ in range(5):
+        items, static_data = failure_run(tmp_path, payload, static_data)
+        alerts.append(items)
+    assert alerts == [[], [], [],
+                      [{"kind": "alert", "title": "Repeated failures: Claim A1 VM",
+                        "body": "4 failures today (alert above 3). The n8n executions list shows each one.", "url": ""}],
+                      []]
+    assert static_data["metrics"]["alerted"] == {"failures:Claim A1 VM": True}
+
+
+@needs_node
+def test_alerts_are_per_workflow_and_come_again_on_a_new_day(tmp_path):
+    claim = fixture("error-trigger")
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = {}
+    for _ in range(4):
+        _, static_data = failure_run(tmp_path, claim, static_data)
+    items, static_data = failure_run(tmp_path, watch, static_data)
+    assert items == []  # Watch offers has failed once today
+    for _ in range(3):
+        items, static_data = failure_run(tmp_path, claim, static_data, now=TOMORROW)
+        assert items == []
+    items, static_data = failure_run(tmp_path, claim, static_data, now=TOMORROW)
+    assert [item["title"] for item in items] == ["Repeated failures: Claim A1 VM"]
+
+
+def test_error_report_alerts_through_notify_after_the_failure_notice():
+    connections = load_workflow(ERROR_WORKFLOW)["connections"]
+    assert connections["Notify Discord"]["main"] == [[{"node": "Build alert", "type": "main", "index": 0}]]
+    assert connections["Build alert"]["main"] == [[{"node": "Notify alert", "type": "main", "index": 0}]]
+    alert = node_named("Notify alert", ERROR_WORKFLOW)
+    assert alert["type"] == "n8n-nodes-base.executeWorkflow"
+    assert alert["parameters"]["workflowId"]["value"] == "notifyDiscord01"
+    assert alert["parameters"]["workflowInputs"] == node_named("Notify Discord", ERROR_WORKFLOW)["parameters"]["workflowInputs"]
+
+
+def test_error_report_notices_are_not_caught():
+    # A failed notice must fail the run, so n8n keeps no static data for it and the failure stays visible in the executions list.
+    for name in ("Notify Discord", "Notify alert"):
+        assert "onError" not in node_named(name, ERROR_WORKFLOW)
+
+
+def test_count_failure_sits_before_the_message_and_passes_the_payload_on():
+    assert node_named("Count failure", ERROR_WORKFLOW)["type"] == "n8n-nodes-base.code"
+    connections = load_workflow(ERROR_WORKFLOW)["connections"]
+    assert connections["Error input"]["main"] == [[{"node": "Count failure", "type": "main", "index": 0}]]
+    assert connections["Count failure"]["main"] == [[{"node": "Build failure message", "type": "main", "index": 0}]]
+
+
+# Recorded inputs for the cases below. Fake ids only: the thread settings are the fixture's, the webhook is discord.test.
+WEBHOOK = "https://discord.test/webhook"
+THREAD_ENV = json.loads((FIXTURES / "thread-settings.env.json").read_text(encoding="utf-8"))
+THREAD_IDS = {
+    "offer": THREAD_ENV["HUNTER_DISCORD_THREAD_OFFERS"],
+    "claim": THREAD_ENV["HUNTER_DISCORD_THREAD_CLAIMS"],
+    "failure": THREAD_ENV["HUNTER_DISCORD_THREAD_FAILURES"],
+    "summary": THREAD_ENV["HUNTER_DISCORD_THREAD_SUMMARY"],
+    "alert": THREAD_ENV["HUNTER_DISCORD_THREAD_SUMMARY"],
+}
+FALLBACK_ID = THREAD_ENV["HUNTER_DISCORD_THREAD_ID"]
+METRICS_DAY = "2026-10-23"  # the day the counters belong to, passed in explicitly: no node reads the clock
+FAILED_500 = {"statusCode": 500, "body": {"message": "500: Internal Server Error"}, "headers": {}}
+
+
+def response(name):
+    return json.loads((FIXTURES / f"{name}.response.json").read_text(encoding="utf-8"))
+
+
+def resolved_thread(tmp_path, kind, env):
+    result = resolve_thread(tmp_path, kind, env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def deliver(tmp_path, first, final, static_data):
+    """Run Check delivery then Count delivery, as the notifier does after a post that got first and ended at final."""
+    code_dir = tmp_path / "chain"
+    code_dir.mkdir(exist_ok=True)
+    check_path = code_dir / "check.js"
+    check_path.write_text(node_named("Check delivery")["parameters"]["jsCode"], encoding="utf-8")
+    count_path = code_dir / "count.js"
+    count_path.write_text(node_named("Count delivery")["parameters"]["jsCode"], encoding="utf-8")
+    runner_path = code_dir / "chain-runner.js"
+    runner_path.write_text(CHAIN_RUNNER, encoding="utf-8")
+    context_path = code_dir / "chain-context.json"
+    context_path.write_text(json.dumps({"input": final, "nodes": {"Post to Discord": first}, "staticData": static_data}),
+                            encoding="utf-8")
+    result = subprocess.run([NODE, str(runner_path), str(check_path), str(count_path), str(context_path)],
+                            capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def count_failures(tmp_path, payloads):
+    """Run Count failure once per payload, feeding each run's static data into the next, as n8n saves it between runs."""
+    static_data = {}
+    for payload in payloads:
+        static_data = count_failure(tmp_path, payload, static_data)
+    return static_data
+
+
+# (a) Thread selection, per kind: a blank or unset kind setting falls back, and a missing thread id fails clearly.
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_fixture_env_routes_each_kind_to_its_own_setting(tmp_path, kind):
+    assert resolved_thread(tmp_path, kind, THREAD_ENV)["threadId"] == THREAD_IDS[kind]
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_kind_setting_falls_back_per_kind(tmp_path, kind, blank):
+    env = dict(THREAD_ENV, **{THREAD_SETTING[kind]: blank})
+    assert resolved_thread(tmp_path, kind, env)["threadId"] == FALLBACK_ID
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_unset_kind_setting_falls_back_per_kind(tmp_path, kind):
+    env = {key: value for key, value in THREAD_ENV.items() if key != THREAD_SETTING[kind]}
+    assert resolved_thread(tmp_path, kind, env)["threadId"] == FALLBACK_ID
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_no_thread_id_names_the_kind_and_both_settings_per_kind(tmp_path, kind):
+    result = resolve_thread(tmp_path, kind, {THREAD_SETTING[kind]: "", "HUNTER_DISCORD_THREAD_ID": "  "})
+    assert result.returncode != 0
+    assert f"no Discord thread for kind '{kind}'" in result.stderr
+    assert f"(checked {THREAD_SETTING[kind]}, HUNTER_DISCORD_THREAD_ID)" in result.stderr
+
+
+@needs_node
+def test_summary_and_alert_both_go_to_the_summary_thread_whatever_the_other_settings_say(tmp_path):
+    for kind in ("summary", "alert"):
+        assert resolved_thread(tmp_path, kind, THREAD_ENV)["threadId"] == THREAD_IDS["summary"]
+    # Only the summary setting and the fallback are set: neither kind uses the fallback.
+    only_summary = {"HUNTER_DISCORD_THREAD_SUMMARY": "555", "HUNTER_DISCORD_THREAD_ID": "999"}
+    for kind in ("summary", "alert"):
+        assert resolved_thread(tmp_path, kind, only_summary)["threadId"] == "555"
+
+
+# (c) Summary and alert inputs, recorded: the expected Discord bodies, and the thread each one resolves to.
+@needs_node
+@pytest.mark.parametrize("name", ["summary", "alert"])
+def test_summary_and_alert_fixtures_match_expected_payloads_and_route_to_summary(tmp_path, name):
+    notify_input = fixture(name)
+    message = format_message(tmp_path, notify_input)
+    assert message == expected(name)
+    code = node_named("Resolve thread")["parameters"]["jsCode"]
+    result = run_code(tmp_path, code, message, env=THREAD_ENV, nodes={"Notify input": notify_input})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"threadId": THREAD_IDS["summary"], "message": message}
+
+
+# (b) The URL carries ?thread_id= on the first POST and on the 429 retry, built from the resolved thread.
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_first_post_url_carries_the_thread_id_per_kind(tmp_path, kind):
+    resolved = resolved_thread(tmp_path, kind, THREAD_ENV)
+    url = render_template(tmp_path, POST_URL, resolved, env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK})
+    assert url == f"{WEBHOOK}?thread_id={THREAD_IDS[kind]}"
+
+
+@needs_node
+@pytest.mark.parametrize("kind", sorted(THREAD_SETTING))
+def test_429_retry_url_carries_the_same_thread_id_per_kind(tmp_path, kind):
+    resolved = resolved_thread(tmp_path, kind, THREAD_ENV)
+    # The retry reads the thread from Resolve thread, not from the 429 response it follows, which has no thread id.
+    url = render_template(tmp_path, RETRY_URL, response("discord-429"), env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK},
+                          nodes={"Resolve thread": resolved})
+    assert url == f"{WEBHOOK}?thread_id={THREAD_IDS[kind]}"
+
+
+@needs_node
+def test_retry_url_uses_the_fallback_thread_when_the_kind_setting_is_blank(tmp_path):
+    env = dict(THREAD_ENV, HUNTER_DISCORD_THREAD_CLAIMS="")
+    resolved = resolved_thread(tmp_path, "claim", env)
+    url = render_template(tmp_path, RETRY_URL, response("discord-429"), env={"HUNTER_DISCORD_WEBHOOK_URL": WEBHOOK},
+                          nodes={"Resolve thread": resolved})
+    assert url == f"{WEBHOOK}?thread_id={FALLBACK_ID}"
+
+
+# (e) Counters: sent and rateLimited move only on a successful run; a failed run leaves them as they were.
+@needs_node
+def test_204_run_counts_sent_only(tmp_path):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 4, "rateLimited": 1}}
+    result = deliver(tmp_path, response("discord-204"), response("discord-204"), {"metrics": metrics})
+    assert result["ok"] is True
+    assert result["staticData"]["metrics"] == {"day": METRICS_DAY, "counters": {"sent": 5, "rateLimited": 1}}
+
+
+@needs_node
+def test_429_then_204_run_counts_sent_and_rate_limited(tmp_path):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 0, "rateLimited": 2}}
+    result = deliver(tmp_path, response("discord-429"), response("discord-204"), {"metrics": metrics})
+    assert result["ok"] is True
+    assert result["staticData"]["metrics"] == {"day": METRICS_DAY, "counters": {"sent": 1, "rateLimited": 3}}
+
+
+@needs_node
+def test_repeated_runs_add_up_across_204_and_429_then_204(tmp_path):
+    static_data = {}
+    for first in (response("discord-204"), response("discord-429"), response("discord-204")):
+        static_data = deliver(tmp_path, first, response("discord-204"), static_data)["staticData"]
+    assert static_data["metrics"]["counters"] == {"sent": 3, "rateLimited": 1}
+
+
+@needs_node
+@pytest.mark.parametrize("first,final", [
+    (response("discord-429"), FAILED_500),
+    (response("discord-429"), response("discord-429")),
+    (FAILED_500, FAILED_500),
+])
+def test_failed_run_leaves_the_counters_unchanged(tmp_path, first, final):
+    metrics = {"day": METRICS_DAY, "counters": {"sent": 4, "rateLimited": 1}}
+    before = {"metrics": metrics}
+    result = deliver(tmp_path, first, final, before)
+    assert result["ok"] is False
+    assert f"HTTP {final['statusCode']}" in result["error"]
+    # Count delivery never ran: with no metrics it would have written counters, so an empty start stays empty.
+    assert deliver(tmp_path, first, final, {})["staticData"] == {}
+    assert result["staticData"] == before
+
+
+# (f) Error report failures: counted per workflow name over repeated failures, in the error workflow's static data.
+@needs_node
+def test_two_workflow_names_and_repeated_failures_count_separately(tmp_path):
+    claim = fixture("error-trigger")
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = count_failures(tmp_path, [claim, watch, claim, claim, watch, claim])
+    assert static_data["metrics"]["counters"]["failures"] == {"Claim A1 VM": 4, "Watch offers": 2}
+
+
+@needs_node
+def test_repeated_failures_of_one_workflow_keep_counting(tmp_path):
+    watch = json.loads((FIXTURES / "error-trigger-watch-offers.input.json").read_text(encoding="utf-8"))
+    static_data = count_failures(tmp_path, [watch] * 5)
+    assert static_data["metrics"]["counters"]["failures"] == {"Watch offers": 5}

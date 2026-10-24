@@ -10,7 +10,7 @@ The full brief is in LysStack `projects/vm-hunter/brief.md`; this file is what y
    first: free shape only, within the free limits, counting what already exists. If you are unsure
    whether something is free, do not build it; say so in your result.
 2. **No secrets in the repository.** Not in workflow JSON, fixtures, tests or docs. Workflows read secrets
-   from n8n credentials or from environment variables listed in `.env.example` (names only, no values).
+   from n8n credentials or from environment variables listed in `.env.example` (names, plus non-secret defaults such as public feed URLs; never a secret).
    Fixtures use obviously fake values (`ocid1.tenancy.oc1..example`, `https://discord.test/webhook`).
 3. **No live calls in checks.** Tests and the local n8n run against recorded responses in
    `tests/fixtures/`, never a real provider, feed or webhook.
@@ -27,7 +27,7 @@ scripts/                checks and helpers (Python standard library + pytest onl
 tests/                  pytest tests; tests/fixtures/ holds recorded responses
 skills/<name>/SKILL.md  how-to knowledge for this project (also linked as .claude/skills and .agents/skills)
 docs/                   owner-facing guides (VM setup)
-.env.example            every environment variable a workflow reads, with a comment, no values
+.env.example            every environment variable a workflow reads, with a comment; non-secret defaults only
 ```
 
 ## Checks
