@@ -318,7 +318,7 @@ def test_guard_counts_every_volume_page(run):
 
 @pytest.mark.parametrize("route, fixture_name, message", [
     (LIST_INSTANCES, "launch-404-not-found.json", "/20160918/instances returned HTTP 404"),
-    (LIST_BOOT, "launch-500-out-of-capacity.json", "/20160918/bootVolumes returned HTTP 500"),
+    (LIST_BOOT, "launch-401-not-authenticated.json", "/20160918/bootVolumes returned HTTP 401"),
     (LIST_BLOCK, "launch-404-not-found.json", "/20160918/volumes returned HTTP 404"),
 ])
 def test_guard_refuses_when_any_list_fails(run, route, fixture_name, message):
@@ -330,6 +330,24 @@ def test_guard_refuses_when_any_list_fails(run, route, fixture_name, message):
     assert item["kind"] == "failure"
     assert f"could not list existing resources: {message}" in item["body"]
     assert res["staticData"]["stopped"] is True
+
+
+@pytest.mark.parametrize("route, response", [
+    (LIST_INSTANCES, None),  # no answer at all, like connect ETIMEDOUT
+    (LIST_BOOT, {"status": 500, "headers": {}, "body": {"code": "InternalError", "message": "Internal error."}}),
+    (LIST_BLOCK, {"status": 429, "headers": {}, "body": {"code": "TooManyRequests", "message": "Too many requests for the user"}}),
+])
+def test_guard_skips_the_attempt_when_a_list_fails_for_a_passing_reason(run, route, response):
+    routes = guard_routes()
+    if response is None:
+        del routes[route]  # the test helper throws for a route it has no recording of
+    else:
+        routes[route] = response
+    res = run(node_code("Cost guard"), routes=routes)
+    assert res["result"] == []  # no launch and no message
+    assert "stopped" not in res["staticData"]
+    assert res["staticData"]["nextAttemptAt"] - NOW == 60_000
+    assert res["staticData"]["metrics"]["counters"] == {"errors": 1}
 
 
 def test_guard_list_requests_are_signed_like_openssl(run, tmp_path, key):
@@ -489,6 +507,19 @@ def test_changed_settings_start_a_stopped_claimer_again(run):
 def test_a_stop_from_before_settings_were_tracked_is_lifted_once(run):
     res = run(node_code("Due for attempt?"), static={"stopped": True})
     assert res["result"] == [{"json": {"due": True}}]
+
+
+def test_a_stop_recorded_under_older_claimer_code_is_lifted_once(run):
+    # The settings key older code saved: the setting values alone, with no code tag in front.
+    names = ["HUNTER_OCI_API_BASE", "HUNTER_OCI_TENANCY_OCID", "HUNTER_OCI_USER_OCID", "HUNTER_OCI_KEY_FINGERPRINT",
+             "HUNTER_OCI_COMPARTMENT_OCID", "HUNTER_OCI_AVAILABILITY_DOMAIN", "HUNTER_OCI_SUBNET_OCID", "HUNTER_OCI_IMAGE_OCID",
+             "HUNTER_OCI_SSH_PUBLIC_KEY", "HUNTER_OCI_A1_OCPUS", "HUNTER_OCI_A1_MEMORY_GB"]
+    old = {"stopped": True, "config": "|".join(ENV.get(name, "") for name in names)}
+    res = run(node_code("Due for attempt?"), static=old, now=NOW + 24 * 60 * 60_000)
+    assert res["result"] == [{"json": {"due": True}}]
+    assert "stopped" not in res["staticData"]
+    again = run(node_code("Due for attempt?"), static={**res["staticData"], "stopped": True}, now=NOW + 48 * 60 * 60_000)
+    assert again["result"] == []  # lifted once, not on every run
 
 
 def test_a_claim_is_never_lifted_by_changed_settings(run):
