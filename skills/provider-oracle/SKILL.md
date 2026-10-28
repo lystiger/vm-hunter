@@ -26,6 +26,9 @@ description: Claim an Oracle Cloud Always Free Ampere A1 VM - signed OCI API req
    exceed 4 OCPUs or 24 GB, or if existing storage plus the requested boot volume would exceed 200 GB.
    Refuse too when any list request fails: an unknown total is not a free total.
 4. A refusal is a `failure` notification and stops the workflow. It is never retried.
+5. Exception: a list request that fails for a reason that passes by itself (no answer at all, such as
+   `connect ETIMEDOUT`, or HTTP 429 or 5xx) skips only this attempt: no launch, no stop, no message.
+   It counts as an error, and the next attempt lists again after 60 seconds.
 
 The static checker fails a workflow whose launch request does not come after the cost-guard node.
 
