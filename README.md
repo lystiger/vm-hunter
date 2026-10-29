@@ -10,8 +10,8 @@ copies imported from here.
 ## Built by Hermes
 
 This repository is a real test of [Hermes](https://github.com/lystiger/Hermes-lab), a runtime that runs a
-team of coding agents (Claude Code, Codex, Antigravity) on one goal. Each roadmap step was one Hermes goal
-job. A planner split the goal into tasks, agents built them in separate Git worktrees, the project's
+team of coding agents (Claude Code, Codex, Antigravity) on one goal. Each roadmap step was built by a Hermes
+goal job (some steps needed a relaunch after a failed job; see the error log). A planner split the goal into tasks, agents built them in separate Git worktrees, the project's
 checks (`./scripts/check`) and an independent verifier agent gated every merge, and the job ended in a
 pull request that the owner reviewed and merged. Deploying to the VM stayed with the owner.
 
@@ -30,7 +30,8 @@ no longer stops the claimer).
 
 ### What went wrong
 
-Every Hermes failure hit while building this was written down as it happened, with its cause and fix:
+Every Hermes failure hit while building this was written down as it happened, with its cause and fix where
+known (E4's cause is unknown; E2 is still open):
 [error log](https://github.com/lystiger/LysStack/blob/main/projects/vm-hunter/error-log.md) (E0–E10).
 The most useful lessons:
 
@@ -59,5 +60,5 @@ The most useful lessons:
 ./scripts/check    # static workflow checks, 211 pytest tests, import into a pinned local n8n
 ```
 
-Tests run every Code node against recorded fixtures with fake credentials. No check calls a real
+Tests run the workflows' Code nodes against recorded fixtures with fake credentials. No check calls a real
 provider, feed or webhook.
