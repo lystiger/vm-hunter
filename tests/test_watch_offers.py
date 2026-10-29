@@ -76,8 +76,11 @@ def lowendbox_items():
 
 
 def fetched(markdown=None):
-    """The Fetch free-for-dev node's output: a 200 with the README text (the recorded fixture unless markdown is given)."""
-    return {"statusCode": 200, "body": fixture_text("free-for-dev.md") if markdown is None else markdown, "headers": {}}
+    """The Fetch free-for-dev node's output: a 200 with the README text (the recorded fixture unless markdown is given).
+
+    The shape the pinned n8n (1.123.87) gives a full text response: the text is in `data`, not `body`."""
+    text = fixture_text("free-for-dev.md") if markdown is None else markdown
+    return {"statusCode": 200, "statusMessage": "OK", "data": text, "headers": {}}
 
 
 def offer_line(name, url, source="free-for-dev"):
