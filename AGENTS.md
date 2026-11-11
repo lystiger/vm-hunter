@@ -14,9 +14,8 @@ The full brief is in LysStack `projects/vm-hunter/brief.md`; this file is what y
    Fixtures use obviously fake values (`ocid1.tenancy.oc1..example`, `https://discord.test/webhook`).
 3. **No live calls in checks.** Tests and the local n8n run against recorded responses in
    `tests/fixtures/`, never a real provider, feed or webhook.
-4. **Never run git.** Hermes commits and merges your changes.
-5. **Never deploy.** The owner imports reviewed workflows into the n8n on their VM.
-6. **Be polite to providers.** Claim attempts wait at least 60 seconds plus jitter; feeds are read at most
+4. **Never deploy.** The owner imports reviewed workflows into the n8n on their VM.
+5. **Be polite to providers.** Claim attempts wait at least 60 seconds plus jitter; feeds are read at most
    every few hours; honour `Retry-After` and HTTP 429.
 
 ## Layout
