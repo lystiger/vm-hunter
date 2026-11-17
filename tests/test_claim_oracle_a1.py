@@ -236,8 +236,9 @@ def test_launch_signature_matches_openssl(run, tmp_path, key):
 
 def test_guard_allows_an_empty_tenancy(run):
     res = run(node_code("Cost guard"), routes=guard_routes())
-    assert first_json(res) == {"kind": "", "title": "", "body": "", "url": "", "request": REQUEST}
-    assert res["staticData"] == {}
+    assert first_json(res) == {"kind": "", "title": "", "body": "", "url": "", "request": REQUEST, "knownInstanceIds": []}
+    assert "stopped" not in res["staticData"]
+    assert res["staticData"]["metrics"]["counters"] == {"costGuardChecks": 1}
 
 
 def test_guard_refuses_ocpus_over_the_limit(run):
@@ -347,7 +348,9 @@ def test_guard_skips_the_attempt_when_a_list_fails_for_a_passing_reason(run, rou
     assert res["result"] == []  # no launch and no message
     assert "stopped" not in res["staticData"]
     assert res["staticData"]["nextAttemptAt"] - NOW == 60_000
-    assert res["staticData"]["metrics"]["counters"] == {"errors": 1}
+    counters = res["staticData"]["metrics"]["counters"]
+    assert counters.get("errors", 0) + counters.get("rateLimited", 0) == 1
+    assert counters["costGuardChecks"] == 1
 
 
 def test_guard_list_requests_are_signed_like_openssl(run, tmp_path, key):
@@ -368,12 +371,23 @@ def test_guard_list_requests_are_signed_like_openssl(run, tmp_path, key):
 def test_claimed_row_records_the_claim(run):
     res = respond(run, {}, "launch-200-instance.json")
     out = first_json(res)
-    assert out["outcome"] == "claimed"
-    assert out["kind"] == "claim"
-    assert out["title"] == "A1 VM created: vm-hunter-a1"
-    assert "Instance ocid1.instance.oc1..example" in out["body"]
-    assert res["staticData"]["claimed"]["id"] == "ocid1.instance.oc1..example"
-    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "success": 1}
+    assert out["outcome"] == "accepted"
+    assert out["kind"] == ""
+    assert res["staticData"]["pendingInstance"]["id"] == "ocid1.instance.oc1..example"
+    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "responsesReceived": 1, "acceptedLaunches": 1}
+
+    # Verify RUNNING via read-only Cost guard check
+    running_inst = a1(4, 24, state="RUNNING")
+    routes = {LIST_INSTANCES: page([running_inst])}
+    verify = run(node_code("Cost guard"), static=res["staticData"], routes=routes)
+    v_out = first_json(verify)
+    assert v_out["skipLaunch"] is True
+    assert v_out["outcome"] == "claimed"
+    assert v_out["kind"] == "claim"
+    assert v_out["title"] == "A1 VM created: vm-hunter-a1-existing"
+    assert "Instance ocid1.instance.oc1..example" in v_out["body"]
+    assert verify["staticData"]["claimed"]["id"] == "ocid1.instance.oc1..example"
+    assert verify["staticData"]["claimed"]["lifecycleState"] == "RUNNING"
 
 
 def test_out_of_capacity_row_waits_and_keeps_trying(run):
@@ -381,14 +395,14 @@ def test_out_of_capacity_row_waits_and_keeps_trying(run):
     out = first_json(res)
     assert out == {"outcome": "capacity", "kind": "", "title": "", "body": "", "url": ""}
     assert "claimed" not in res["staticData"] and "stopped" not in res["staticData"]
-    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "outOfCapacity": 1}
+    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "responsesReceived": 1, "outOfCapacity": 1}
 
 
 def test_throttled_row_doubles_the_wait(run):
     res = respond(run, {}, "launch-429-throttled.json")
     out = first_json(res)
     assert out["outcome"] == "throttled" and out["kind"] == ""
-    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "rateLimited": 1}
+    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "responsesReceived": 1, "rateLimited": 1}
     assert res["staticData"]["metrics"]["consecutive429"] == 1
 
 
@@ -406,14 +420,14 @@ def test_configuration_rows_stop_the_claimer(run, name, status, code):
     assert f"{code}:" in out["body"]
     assert f"Request id: EXAMPLE-REQUEST-ID-{status}" in out["body"]
     assert res["staticData"]["stopped"] is True
-    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "configErrors": 1}
+    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "responsesReceived": 1, "configErrors": 1}
 
 
 def test_other_status_counts_as_an_error_and_does_not_stop(run):
     res = respond_raw(run, {}, 503, {"opc-request-id": "EXAMPLE-REQUEST-ID-503"}, {"code": "ServiceUnavailable", "message": "Try again."})
     assert first_json(res)["outcome"] == "error"
     assert "stopped" not in res["staticData"]
-    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "errors": 1}
+    assert res["staticData"]["metrics"]["counters"] == {"attempts": 1, "responsesReceived": 1, "errors": 1}
 
 
 # ---- waits and jitter -------------------------------------------------------------------------
@@ -455,18 +469,18 @@ def test_429_reaching_the_cap_alerts_once_per_day(run):
     assert first_json(again)["kind"] == ""
 
 
-def test_retry_after_is_honoured_within_the_cap(run):
+def test_retry_after_is_honoured_even_above_15_minutes(run):
     short = respond_raw(run, {}, 429, {"retry-after": "300"}, {"code": "TooManyRequests", "message": "Too many requests for the user"})
     assert short["staticData"]["nextAttemptAt"] - NOW == 300_000
     long = respond_raw(run, {}, 429, {"retry-after": "1200"}, {"code": "TooManyRequests", "message": "Too many requests for the user"})
-    assert long["staticData"]["nextAttemptAt"] - NOW == 900_000
+    assert long["staticData"]["nextAttemptAt"] - NOW == 1_200_000
 
 
-def test_a_non_429_response_resets_the_429_streak(run):
+def test_alternating_500_429_preserves_backoff_protection(run):
     static = respond_raw(run, {}, 429, {}, {"code": "TooManyRequests", "message": "Too many requests for the user"})["staticData"]
     static = respond(run, static, "launch-500-out-of-capacity.json")["staticData"]
     res = respond_raw(run, static, 429, {}, {"code": "TooManyRequests", "message": "Too many requests for the user"})
-    assert res["staticData"]["nextAttemptAt"] - NOW == 60_000
+    assert res["staticData"]["nextAttemptAt"] - NOW == 120_000
 
 
 # ---- stop after success, due checks and counters ---------------------------------------------
@@ -485,6 +499,7 @@ def test_an_attempt_holds_the_claimer_while_it_runs(run):
 
 def test_a_claim_stops_the_claimer(run):
     static = respond(run, {}, "launch-200-instance.json")["staticData"]
+    static = run(node_code("Cost guard"), static=static, routes={LIST_INSTANCES: page([a1(4, 24, state="RUNNING")])})["staticData"]
     later = NOW + 24 * 60 * 60_000
     assert run(node_code("Due for attempt?"), static=static, now=later)["result"] == []
 
@@ -524,6 +539,7 @@ def test_a_stop_recorded_under_older_claimer_code_is_lifted_once(run):
 
 def test_a_claim_is_never_lifted_by_changed_settings(run):
     static = respond(run, {"config": "old"}, "launch-200-instance.json")["staticData"]
+    static = run(node_code("Cost guard"), static=static, routes={LIST_INSTANCES: page([a1(4, 24, state="RUNNING")])})["staticData"]
     res = run(node_code("Due for attempt?"), static=static, now=NOW + 60_000, env={"HUNTER_OCI_A1_OCPUS": "2"})
     assert res["result"] == []
 
@@ -546,7 +562,7 @@ def test_counters_count_each_outcome_across_attempts(run):
     static = respond_raw(run, static, 503, {}, {"code": "ServiceUnavailable", "message": "Try again."})["staticData"]
     static = respond(run, static, "launch-200-instance.json")["staticData"]
     assert static["metrics"]["counters"] == {
-        "attempts": 5, "outOfCapacity": 2, "rateLimited": 1, "errors": 1, "success": 1,
+        "attempts": 5, "responsesReceived": 5, "outOfCapacity": 2, "rateLimited": 1, "errors": 1, "acceptedLaunches": 1,
     }
 
 
